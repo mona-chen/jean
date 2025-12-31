@@ -1,55 +1,260 @@
-name: CI
+name: TMCP Server CI
 
 on:
-  pull_request:
   push:
-    branches: [ main ]
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  RAILS_ENV: test
+  RUBY_VERSION: '3.4'
+  BUNDLE_VERSION: '2.5'
 
 jobs:
-  scan_ruby:
+  test:
+    name: Test (Ruby ${{ matrix.ruby }})
     runs-on: ubuntu-latest
+    container: ruby:${{ matrix.ruby }}-bookworm
+
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ['3.2', '3.3', '3.4']
+        include:
+          - ruby: '3.4'
+            coverage: true
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        ports: ['5432:5432']
+        env:
+          POSTGRES_USER: rails
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: tmcp_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Ruby
+      - name: Setup Ruby ${{ matrix.ruby }}
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: .ruby-version
+          ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
+          cache-version: v1
 
-      - name: Scan for common Rails security vulnerabilities using static analysis
-        run: bin/brakeman --no-pager
+      - name: Install dependencies
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq \
+            build-essential \
+            libpq-dev \
+            libvips \
+            postgresql-client \
+            curl \
+            gnupg
 
-  scan_js:
+      - name: Setup database
+        env:
+          DATABASE_URL: postgres://rails:password@localhost:5432/tmcp_test
+          REDIS_URL: redis://localhost:6379/0
+        run: |
+          bundle exec rails db:setup
+          bundle exec rails db:migrate
+
+      - name: Cache Bootsnap
+        uses: actions/cache@v4
+        with:
+          path: tmp/cache/bootsnap
+          key: bootsnap-${{ runner.os }}-${{ hashFiles('**/*.rb') }}
+          restore-keys: |
+            bootsnap-${{ runner.os }}-
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgres://rails:password@localhost:5432/tmcp_test
+          REDIS_URL: redis://localhost:6379/0
+          COVERAGE: ${{ matrix.coverage == true && 'true' || 'false' }}
+        run: bundle exec rails test
+
+      - name: Upload coverage
+        if: matrix.coverage == true
+        uses: codecov/codecov-action@v4
+        with:
+          flags: ruby
+          fail_ci_if_error: false
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-ruby-${{ matrix.ruby }}
+          path: tmp/test_results/
+
+  rubocop:
+    name: Lint
     runs-on: ubuntu-latest
+    container: ruby:3.4-bookworm
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Ruby
+      - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: .ruby-version
+          ruby-version: '3.4'
           bundler-cache: true
 
-      - name: Scan for security vulnerabilities in JavaScript dependencies
-        run: bin/importmap audit
+      - name: Install dependencies
+        run: apt-get update -qq && apt-get install -y -qq build-essential
 
-  lint:
+      - name: Run RuboCop
+        run: bundle exec rubocop
+
+  security-audit:
+    name: Security Audit
     runs-on: ubuntu-latest
+    container: ruby:3.4-bookworm
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Ruby
+      - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: .ruby-version
+          ruby-version: '3.4'
           bundler-cache: true
 
-      - name: Lint code for consistent style
-        run: bin/rubocop -f github
+      - name: Install dependencies
+        run: apt-get update -qq && apt-get install -y -qq build-essential
 
+      - name: Run bundler-audit
+        run: bundle exec bundler-audit
+
+      - name: Run brakeman
+        run: bundle exec brakeman --exit-zero
+
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: [test, rubocop, security-audit]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: tmcp-server:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify image
+        run: docker run --rm tmcp-server:test rails --version
+
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: docker-build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        ports: ['5432:5432']
+        env:
+          POSTGRES_USER: rails
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: tmcp_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and cache Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: tmcp-server:integration
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run integration tests
+        env:
+          DATABASE_URL: postgres://rails:password@localhost:5432/tmcp_test
+          REDIS_URL: redis://localhost:6379/0
+          MATRIX_API_URL: http://localhost:8008
+          MATRIX_HS_TOKEN: test_hs_token
+          MATRIX_ACCESS_TOKEN: test_as_token
+          TMCP_PRIVATE_KEY: "${{ secrets.TMCP_PRIVATE_KEY }}"
+        run: |
+          docker run --rm \
+            --network host \
+            -e DATABASE_URL \
+            -e REDIS_URL \
+            -e MATRIX_API_URL \
+            -e MATRIX_HS_TOKEN \
+            -e MATRIX_ACCESS_TOKEN \
+            -e TMCP_PRIVATE_KEY \
+            -e RAILS_ENV=test \
+            tmcp-server:integration \
+            bundle exec rails test:integration
+
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [test, rubocop, security-audit, docker-build]
+    if: always()
+
+    steps:
+      - name: Check for failures
+        if: needs.test.result == 'failure' || needs.rubocop.result == 'failure' || needs.security-audit.result == 'failure'
+        run: exit 1
+
+      - name: Success notification
+        if: success()
+        run: echo "All checks passed!"
