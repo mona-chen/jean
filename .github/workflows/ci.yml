@@ -79,7 +79,7 @@ jobs:
           bundle exec rails db:migrate
 
       - name: Cache Bootsnap
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tmp/cache/bootsnap
           key: bootsnap-${{ runner.os }}-${{ hashFiles('**/*.rb') }}
