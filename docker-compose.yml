@@ -4,7 +4,7 @@ services:
   db:
     image: postgres:14
     environment:
-      POSTGRES_DB: tmcp_development
+      POSTGRES_DB: tmcp_production
       POSTGRES_USER: tmcp
       POSTGRES_PASSWORD: tmcp_password
     volumes:
