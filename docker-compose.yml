@@ -33,8 +33,8 @@ services:
   rails:
     build: .
     environment:
-      RAILS_ENV: development
-      DATABASE_URL: postgresql://tmcp:tmcp_password@db:5432/tmcp_development
+      RAILS_ENV: production
+      DATABASE_URL: postgresql://tmcp:tmcp_password@db:5432/tmcp_production
       REDIS_URL: redis://redis:6379/0
       SECRET_KEY_BASE: development_secret_key_base_change_in_production
       TMCP_JWT_ISSUER: http://localhost:3000
