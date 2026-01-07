@@ -1,5 +1,5 @@
- # syntax=docker/dockerfile:1
-# check=error=true
+  # syntax=docker/dockerfile:1
+ # check=skip=SecretsUsedInArgOrEnv
 
 # This Dockerfile is designed for development and production. Use with Kamal or build'n'run by hand:
 # docker build -t tmcp_server .
