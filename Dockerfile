@@ -67,7 +67,7 @@ COPY --from=build /app /app
 # Run as root for development (bind mounts preserve host ownership)
 
 # Entrypoint prepares the database.
-# ENTRYPOINT ["/rails/bin/docker-entrypoint"]
+ENTRYPOINT ["/rails/bin/docker-entrypoint"]
 
 # Start server via Thruster by default, this can be overwritten at runtime
 EXPOSE 80
