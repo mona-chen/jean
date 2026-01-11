@@ -1,4 +1,5 @@
 class Api::V1::MiniAppRegistrationController < ApplicationController
+  before_action :authenticate_tep_token, only: [ :create ]
   before_action :validate_developer_token!, only: [ :create ]
   before_action :set_miniapp, only: [ :show, :update, :appeal, :submit_for_review ]
 
@@ -145,9 +146,32 @@ class Api::V1::MiniAppRegistrationController < ApplicationController
 
   private
 
+  def authenticate_tep_token
+    auth_header = request.headers["Authorization"]
+    unless auth_header&.start_with?("Bearer ")
+      return render json: { error: "missing_token", message: "TEP token required" }, status: :unauthorized
+    end
+
+    token = auth_header.sub("Bearer ", "")
+
+    begin
+      payload = TepTokenService.decode(token)
+      user_id = payload["sub"]
+
+      @current_user = User.find_by(matrix_user_id: user_id)
+      unless @current_user
+        return render json: { error: "invalid_token", message: "User not found" }, status: :unauthorized
+      end
+
+      @token_scopes = payload["scope"]&.split(" ") || []
+    rescue JWT::DecodeError => e
+      render json: { error: "invalid_token", message: e.message }, status: :unauthorized
+    end
+  end
+
   def validate_developer_token!
     required_scopes = [ "developer:register" ]
-    has_scope = required_scopes.any? { |s| @current_scopes.include?(s) }
+    has_scope = required_scopes.any? { |s| @token_scopes.include?(s) }
 
     unless has_scope
       render json: {

@@ -46,6 +46,29 @@ class Api::V1::AuthRevocationController < ApplicationController
 
   private
 
+  def authenticate_tep_token
+    auth_header = request.headers["Authorization"]
+    unless auth_header&.start_with?("Bearer ")
+      return render json: { error: "missing_token", message: "TEP token required" }, status: :unauthorized
+    end
+
+    token = auth_header.sub("Bearer ", "")
+
+    begin
+      payload = TepTokenService.decode(token)
+      user_id = payload["sub"]
+
+      @current_user = User.find_by(matrix_user_id: user_id)
+      unless @current_user
+        return render json: { error: "invalid_token", message: "User not found" }, status: :unauthorized
+      end
+
+      @token_scopes = payload["scope"]&.split(" ") || []
+    rescue JWT::DecodeError => e
+      render json: { error: "invalid_token", message: e.message }, status: :unauthorized
+    end
+  end
+
   def parse_scopes(scopes_param)
     return [] if scopes_param.blank?
     scopes_param.is_a?(Array) ? scopes_param : scopes_param.split
