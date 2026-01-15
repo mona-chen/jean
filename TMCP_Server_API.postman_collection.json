@@ -319,6 +319,84 @@
       "description": "OAuth 2.0 + PKCE and Device Authorization Grant endpoints."
     },
     {
+      "name": "1.3. Matrix Session Delegation (Section 4.3.1)",
+      "item": [
+        {
+          "name": "Matrix Token Introspection",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/x-www-form-urlencoded"},
+              {"key": "Authorization", "value": "Basic base64(tmcp_server_001:client_secret)"}
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {"key": "token", "value": "{{matrixHsToken}}"}
+              ]
+            },
+            "url": {
+              "raw": "{{masIntrospectionUrl}}",
+              "host": ["{{masIntrospectionUrl}}"]
+            },
+            "description": "**Route:** `POST /oauth2/introspect` (MAS endpoint)\n\n**PROTO.md Reference:** Section 4.9.2 (Matrix Token Introspection)\n\n**Purpose:** Validate Matrix access token using MAS introspection.\n\n**Required Parameters:**\n- `token`: Matrix access token to introspect\n\n**Response (200):**\n```json\n{\n  \"active\": true,\n  \"sub\": \"@alice:tween.example\",\n  \"scope\": \"urn:matrix:org.matrix.msc2967.client:api:*\",\n  \"client_id\": \"element_web_001\",\n  \"exp\": 1735689090,\n  \"iat\": 1735689060\n}\n```\n\n**Response (200 - Inactive Token):**\n```json\n{\n  \"active\": false,\n  \"exp\": 1735689080\n}\n```\n\n**Protocol Compliance:**\n- ✓ Validates Matrix tokens with MAS\n- ✓ Returns user claims (sub, scope, exp)\n- ✓ Supports inactive token detection\n- ✓ Used for Matrix Session Delegation flow"
+          },
+          "response": []
+        },
+        {
+          "name": "Matrix Session Delegation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const jsonData = pm.response.json();",
+                  "if (jsonData.access_token && jsonData.user_id) {",
+                  "    pm.collectionVariables.set('matrixHsToken', jsonData.access_token);",
+                  "    pm.environment.set('matrixHsToken', jsonData.access_token);",
+                  "    pm.collectionVariables.set('userId', jsonData.user_id);",
+                  "    pm.environment.set('userId', jsonData.user_id);",
+                  "    console.log('Matrix token obtained for user:', jsonData.user_id);",
+                  "}",
+                  "if (jsonData.wallet_id) {",
+                  "    pm.collectionVariables.set('walletId', jsonData.wallet_id);",
+                  "    pm.environment.set('walletId', jsonData.wallet_id);",
+                  "}",
+                  "console.log('TEP token received:', jsonData.access_token);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/x-www-form-urlencoded"}
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {"key": "grant_type", "value": "urn:ietf:params:oauth:grant-type:token-exchange"},
+                {"key": "subject_token", "value": "{{matrixHsToken}}"},
+                {"key": "subject_token_type", "value": "urn:ietf:params:oauth:token-type:access_token"},
+                {"key": "client_id", "value": "{{clientId}}"},
+                {"key": "scope", "value": "user:read wallet:balance storage:write"},
+                {"key": "requested_token_type", "value": "urn:tmcp:params:oauth:token-type:tep"}
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/oauth/token",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "oauth", "token"]
+            },
+            "description": "**Route:** `POST /api/v1/oauth/token`\n\n**PROTO.md Reference:** Section 4.3.1 (Matrix Session Delegation)\n\n**Protocol Link:** https://github.com/Tween-IM/TMCP-Proto#43-matrix-session-delegation\n\n**Implementation:** `app/controllers/api/v1/oauth_controller.rb:23-134`\n\n**Request Parameters:**\n- `grant_type`: `urn:ietf:params:oauth:grant-type:token-exchange`\n- `subject_token`: Matrix access token from Element session\n- `subject_token_type`: `urn:ietf:params:oauth:token-type:access_token`\n- `client_id`: Doorkeeper app UID (looks up in MiniApp)\n- `scope`: Space-separated TMCP scopes requested\n- `requested_token_type`: `urn:tmcp:params:oauth:token-type:tep` (optional)\n- `miniapp_context`: JSON object (optional)\n\n**Response (200):**\n```json\n{\n  \"access_token\": \"tep.eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...\",\n  \"token_type\": \"Bearer\",\n  \"expires_in\": 86400,\n  \"refresh_token\": \"rt_abc123\",\n  \"matrix_access_token\": \"syt_opaque_matrix_token\",\n  \"matrix_expires_in\": 300,\n  \"user_id\": \"@alice:tween.example\",\n  \"wallet_id\": \"tw_alice_123\",\n  \"delegated_session\": true\n}\n```\n\n**Consent Required (403):**\n```json\n{\n  \"error\": \"consent_required\",\n  \"error_description\": \"User must approve sensitive scopes\",\n  \"consent_required_scopes\": [\"wallet:pay\"],\n  \"pre_approved_scopes\": [\"user:read\", \"storage:write\"],\n  \"consent_ui_endpoint\": \"/oauth2/consent?session=xyz123\"\n}\n```\n\n**Protocol Compliance:**\n- ✓ Matrix token validated via MAS introspection (Section 4.9.2)\n- ✓ Pre-approved scopes auto-granted\n- ✓ Sensitive scopes require consent\n- ✓ Returns both TEP and new Matrix access token\n- ✓ Includes miniapp_context in response\n- ✓ wallet_id format: `tw_` prefix (PROTO.md lines 375, 650)"
+          },
+          "response": []
+        }
+      ],
+      "description": "Matrix Token Introspection and Matrix Session Delegation endpoints for MAS integration."
+    },
+    {
       "name": "1.5. Authorization Management (Section 5)",
       "item": [
         {
