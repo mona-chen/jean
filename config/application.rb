@@ -48,13 +48,14 @@ module TmcpServer
     # Custom middleware for TMCP
     config.middleware.use Rack::Attack
 
-    # Keycloak OAuth Integration
-    config.keycloak = {
-      server_url: ENV["KEYCLOAK_URL"] || "https://iam.tween.im",
-      realm: ENV["KEYCLOAK_REALM"] || "tween",
-      client_id: ENV["KEYCLOAK_CLIENT_ID"] || "tmcp-server",
-      client_secret: ENV["KEYCLOAK_CLIENT_SECRET"],
-      redirect_uri: ENV["TMCP_REDIRECT_URI"] || "https://tmcp.tween.im/api/v1/oauth2/callback"
+    # Matrix Authentication Service (MAS) Integration (PROTO Section 4.2)
+    config.mas = {
+      server_url: ENV["MAS_URL"] || "https://mas.tween.example",
+      client_id: ENV["MAS_CLIENT_ID"] || "tmcp-server",
+      client_secret: ENV["MAS_CLIENT_SECRET"],
+      token_url: ENV["MAS_TOKEN_URL"] || "https://mas.tween.example/oauth2/token",
+      introspection_url: ENV["MAS_INTROSPECTION_URL"] || "https://mas.tween.example/oauth2/introspect",
+      revocation_url: ENV["MAS_REVOCATION_URL"] || "https://mas.tween.example/oauth2/revoke"
     }
 
     # Session store for OAuth flow

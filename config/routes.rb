@@ -36,16 +36,16 @@ Rails.application.routes.draw do
        post "payments/:payment_id/mfa/challenge", to: "payments#mfa_challenge"
        post "payments/:payment_id/mfa/verify", to: "payments#mfa_verify"
 
-        # OAuth endpoints (TMCP Protocol Section 4.2)
-        get "oauth/authorize", to: "oauth#authorize"
-        post "oauth/consent", to: "oauth#consent"
-        post "oauth/token", to: "oauth#token"
-        get "oauth2/callback", to: "oauth#callback"
+         # OAuth endpoints (TMCP Protocol Section 4.2)
+         get "oauth/authorize", to: "oauth#authorize"
+         post "oauth/token", to: "oauth#token"
+         post "oauth2/consent", to: "oauth#consent"
+         get "oauth2/callback", to: "oauth#callback"
 
-        # Device Authorization Grant (RFC 8628) - TMCP v1.5.0
-        post "oauth2/device/authorization", to: "oauth/device_authorization#create"
-        get "oauth2/device", to: "oauth/device_authorization#show"
-        post "oauth2/device/token", to: "oauth/device_token#create"
+         # Device Authorization Grant (RFC 8628) - PROTO Section 4.3.2
+         post "oauth2/device/authorization", to: "oauth/device_authorization#create"
+         get "oauth2/device", to: "oauth/device_authorization#show"
+         post "oauth2/device/token", to: "oauth/device_token#create"
 
        # Store endpoints (TMCP Protocol Section 16.6)
        get "store/categories", to: "store#categories"

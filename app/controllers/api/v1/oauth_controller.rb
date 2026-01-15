@@ -1,9 +1,6 @@
 class Api::V1::OauthController < ApplicationController
-  # TMCP Protocol Section 4.2: MAS OAuth 2.0 + PKCE Integration
-
   skip_before_action :verify_authenticity_token, only: [ :authorize, :token, :device_code, :device_token ]
 
-  # GET /api/v1/oauth/authorize - Authorization endpoint
   def authorize
     raw_params = params
 
@@ -76,7 +73,6 @@ class Api::V1::OauthController < ApplicationController
     redirect_to "#{mas_auth_url}?#{redirect_params.to_query}", allow_other_host: true
   end
 
-  # POST /api/v1/oauth/device/code - Device authorization (RFC 8628)
   def device_code
     raw_params = params
 
@@ -102,7 +98,6 @@ class Api::V1::OauthController < ApplicationController
     }
   end
 
-  # POST /api/v1/oauth/device/token - Device token exchange
   def device_token
     raw_params = params
 
@@ -131,89 +126,333 @@ class Api::V1::OauthController < ApplicationController
     }
   end
 
-  # POST /api/v1/oauth/token - Token endpoint
   def token
     raw_params = params
 
-    if raw_params[:grant_type] == "authorization_code"
-      auth_code = raw_params[:code]
-      auth_request_id = raw_params[:state]
-
-      auth_request = Rails.cache.read("auth_request:#{auth_request_id}")
-      unless auth_request
-        return render json: {
-          error: "invalid_grant",
-          error_description: "Authorization request not found"
-        }, status: :bad_request
-      end
-
-       mas_client = MasClientService.new(
-         client_id: auth_request["client_id"],
-         client_secret: ENV["MAS_CLIENT_SECRET"],
-         token_url: ENV["MAS_TOKEN_URL"] || "https://auth.tween.example/oauth2/token",
-         introspection_url: ENV["MAS_INTROSPECTION_URL"] || "https://auth.tween.example/oauth2/introspect"
-       )
-
-       access_token = TepTokenService.encode(
-         {
-           user_id: "@authenticated_user:tween.example",
-           miniapp_id: auth_request["client_id"]
-         },
-         scopes: auth_request["scope"],
-         wallet_id: "tw_test_wallet_123",
-         session_id: SecureRandom.uuid
-       )
-
-      refresh_token = SecureRandom.urlsafe_base64(32)
-
-      Rails.cache.write("refresh_token:#{refresh_token}", {
-        user_id: "@authenticated_user:tween.example",
-        miniapp_id: auth_request["client_id"],
-        scope: auth_request["scope"]
-      }, expires_in: 30.days)
-
-      render json: {
-        access_token: access_token,
-        token_type: "Bearer",
-        expires_in: 86400,
-        refresh_token: refresh_token,
-        scope: auth_request["scope"].join(" "),
-        user_id: "@authenticated_user:tween.example",
-        wallet_id: "tw_test_wallet_123"
-      }
-
+    if raw_params[:grant_type] == "urn:ietf:params:oauth:grant-type:token-exchange"
+      handle_matrix_session_delegation(raw_params)
+    elsif raw_params[:grant_type] == "authorization_code"
+      handle_authorization_code_flow(raw_params)
     elsif raw_params[:grant_type] == "refresh_token"
-      refresh_token = raw_params[:refresh_token]
-      refresh_data = Rails.cache.read("refresh_token:#{refresh_token}")
-
-      unless refresh_data
-        return render json: {
-          error: "invalid_grant",
-          error_description: "Refresh token expired or invalid"
-         }, status: :bad_request
-      end
-
-       access_token = TepTokenService.encode(
-         {
-           user_id: refresh_data["user_id"],
-           miniapp_id: refresh_data["miniapp_id"]
-         },
-         scopes: refresh_data["scope"],
-         wallet_id: "tw_test_wallet_123"
-       )
-
-      new_refresh_token = SecureRandom.urlsafe_base64(32)
-      Rails.cache.write("refresh_token:#{new_refresh_token}", refresh_data, expires_in: 30.days)
-
-      render json: {
-        access_token: access_token,
-        token_type: "Bearer",
-        expires_in: 86400,
-        refresh_token: new_refresh_token,
-        scope: refresh_data["scope"].join(" ")
-      }
+      handle_refresh_token_flow(raw_params)
     else
       render json: { error: "unsupported_grant_type" }, status: :bad_request
+    end
+  end
+
+  def consent
+    session_id = params[:session]
+    approved = params[:approved] == "true"
+
+    consent_data = Rails.cache.read("consent:#{session_id}")
+    unless consent_data
+      return render json: {
+        error: "invalid_request",
+        error_description: "Invalid or expired consent session"
+      }, status: :bad_request
+    end
+
+    if approved
+      consent_data[:consent_required_scopes].each do |scope|
+        AuthorizationApproval.create!(
+          user_id: consent_data[:user_id],
+          miniapp_id: consent_data[:miniapp_id],
+          scope: scope,
+          approved_at: Time.current,
+          approval_method: "user_consent"
+        )
+      end
+      Rails.cache.delete("consent:#{session_id}")
+
+      render json: {
+        message: "Consent recorded successfully"
+      }, status: :ok
+    else
+      render json: {
+        error: "consent_declined",
+        error_description: "User declined consent"
+      }, status: :bad_request
+    end
+  end
+
+  private
+
+  def handle_matrix_session_delegation(params)
+    subject_token = params[:subject_token]
+    subject_token_type = params[:subject_token_type]
+    client_id = params[:client_id]
+    client_secret = params[:client_secret]
+    scopes = params[:scope] ? params[:scope].split : []
+    miniapp_context = params[:miniapp_context] ? JSON.parse(params[:miniapp_context]) : {}
+
+    unless subject_token && subject_token_type && client_id
+      render json: {
+        error: "invalid_request",
+        error_description: "subject_token, subject_token_type and client_id are required"
+      }, status: :bad_request
+      return
+    end
+
+    unless subject_token_type == "urn:ietf:params:oauth:token-type:access_token"
+      render json: {
+        error: "invalid_request",
+        error_description: "subject_token_type must be urn:ietf:params:oauth:token-type:access_token"
+      }, status: :bad_request
+      return
+    end
+
+    application = Doorkeeper::Application.find_by(uid: client_id)
+    unless application
+      render json: {
+        error: "invalid_client",
+        error_description: "Unknown client_id"
+      }, status: :unauthorized
+      return
+    end
+
+    unless application.secret == client_secret
+      render json: {
+        error: "invalid_client",
+        error_description: "Invalid client credentials"
+      }, status: :unauthorized
+      return
+    end
+
+    mas_client = MasClientService.new(
+      client_id: ENV["MAS_CLIENT_ID"] || "tmcp-server",
+      client_secret: ENV["MAS_CLIENT_SECRET"],
+      token_url: ENV["MAS_TOKEN_URL"] || "https://mas.tween.example/oauth2/token",
+      introspection_url: ENV["MAS_INTROSPECTION_URL"] || "https://mas.tween.example/oauth2/introspect"
+    )
+
+    begin
+      introspection_response = mas_client.introspect_token(subject_token)
+      unless introspection_response["active"]
+        render json: {
+          error: "invalid_grant",
+          error_description: "Subject token is not active"
+        }, status: :bad_request
+        return
+      end
+
+      matrix_user_id = introspection_response["sub"]
+      unless matrix_user_id
+        render json: {
+          error: "invalid_grant",
+          error_description: "Matrix token does not contain valid user ID"
+        }, status: :bad_request
+        return
+      end
+
+      user = User.find_or_create_by(matrix_user_id: matrix_user_id) do |u|
+        username_homeserver = matrix_user_id.split("@").last
+        localpart, domain = username_homeserver.split(":")
+        u.matrix_username = localpart
+        u.matrix_homeserver = domain
+      end
+
+      authorization_result = authorize_scopes(user, application, scopes)
+
+      if authorization_result[:consent_required]
+        render json: {
+          error: "consent_required",
+          error_description: "User must approve sensitive scopes",
+          consent_required_scopes: authorization_result[:consent_required_scopes],
+          pre_approved_scopes: authorization_result[:pre_approved_scopes],
+          consent_ui_endpoint: "/oauth2/consent?session=#{authorization_result[:session_id]}"
+        }, status: :forbidden
+        return
+      end
+
+      tep_response = mas_client.exchange_matrix_token_for_tep(
+        subject_token,
+        client_id,
+        authorization_result[:authorized_scopes],
+        miniapp_context,
+        introspection_response
+      )
+
+      render json: tep_response
+
+    rescue MasClientService::InvalidTokenError, MasClientService::MasError => e
+      render json: {
+        error: "invalid_grant",
+        error_description: e.message
+      }, status: :bad_request
+    rescue JSON::ParserError
+      render json: {
+        error: "invalid_request",
+        error_description: "Invalid miniapp_context JSON"
+      }, status: :bad_request
+    end
+  end
+
+  def handle_authorization_code_flow(params)
+    auth_code = params[:code]
+    auth_request_id = params[:state]
+    matrix_access_token = params[:matrix_access_token]
+    client_id = params[:client_id]
+
+    auth_request = Rails.cache.read("auth_request:#{auth_request_id}")
+    unless auth_request
+      return render json: {
+        error: "invalid_grant",
+        error_description: "Authorization request not found"
+      }, status: :bad_request
+    end
+
+    unless matrix_access_token
+      return render json: {
+        error: "invalid_request",
+        error_description: "matrix_access_token is required"
+      }, status: :bad_request
+    end
+
+    application = Doorkeeper::Application.find_by(uid: auth_request["client_id"])
+    unless application
+      return render json: {
+        error: "invalid_client",
+        error_description: "Unknown client_id"
+      }, status: :unauthorized
+    end
+
+    mas_client = MasClientService.new(
+      client_id: ENV["MAS_CLIENT_ID"] || "tmcp-server",
+      client_secret: ENV["MAS_CLIENT_SECRET"],
+      token_url: ENV["MAS_TOKEN_URL"] || "https://mas.tween.example/oauth2/token",
+      introspection_url: ENV["MAS_INTROSPECTION_URL"] || "https://mas.tween.example/oauth2/introspect"
+    )
+
+    begin
+      introspection_response = mas_client.introspect_token(matrix_access_token)
+      unless introspection_response["active"]
+        render json: {
+          error: "invalid_grant",
+          error_description: "Matrix token is not active"
+        }, status: :bad_request
+        return
+      end
+
+      matrix_user_id = introspection_response["sub"]
+      unless matrix_user_id
+        render json: {
+          error: "invalid_grant",
+          error_description: "Matrix token does not contain valid user ID"
+        }, status: :bad_request
+        return
+      end
+
+      user = User.find_or_create_by(matrix_user_id: matrix_user_id) do |u|
+        username_homeserver = matrix_user_id.split("@").last
+        localpart, domain = username_homeserver.split(":")
+        u.matrix_username = localpart
+        u.matrix_homeserver = domain
+      end
+
+      scopes = auth_request["scope"]
+      tep_response = mas_client.exchange_matrix_token_for_tep(
+        matrix_access_token,
+        auth_request["client_id"],
+        scopes,
+        {},
+        introspection_response
+      )
+
+      render json: tep_response
+
+    rescue MasClientService::InvalidTokenError, MasClientService::MasError => e
+      render json: {
+        error: "invalid_grant",
+        error_description: e.message
+      }, status: :bad_request
+    end
+  end
+
+  def handle_refresh_token_flow(params)
+    refresh_token = params[:refresh_token]
+    refresh_data = Rails.cache.read("refresh_token:#{refresh_token}")
+
+    unless refresh_data
+      render json: {
+        error: "invalid_grant",
+        error_description: "Refresh token expired or invalid"
+       }, status: :bad_request
+      return
+    end
+
+     user = User.find_by(matrix_user_id: refresh_data["user_id"])
+     unless user
+       render json: {
+         error: "invalid_grant",
+         error_description: "User not found"
+       }, status: :bad_request
+       return
+     end
+
+     access_token = TepTokenService.encode(
+       {
+         user_id: refresh_data["user_id"],
+         miniapp_id: refresh_data["miniapp_id"]
+       },
+       scopes: refresh_data["scope"],
+       wallet_id: user.wallet_id
+     )
+
+    new_refresh_token = SecureRandom.urlsafe_base64(32)
+    Rails.cache.write("refresh_token:#{new_refresh_token}", refresh_data, expires_in: 30.days)
+
+    render json: {
+      access_token: access_token,
+      token_type: "Bearer",
+      expires_in: 86400,
+      refresh_token: new_refresh_token,
+      scope: refresh_data["scope"].join(" ")
+    }
+  end
+
+  def authorize_scopes(user, application, requested_scopes)
+    miniapp = MiniApp.find_by(app_id: application.uid)
+    return { authorized_scopes: [], consent_required: false } unless miniapp
+
+    sensitive_scopes = %w[wallet:pay wallet:request wallet:history messaging:send room:create room:invite]
+    pre_approved_scopes = []
+    consent_required_scopes = []
+
+    requested_scopes.each do |scope|
+      approved = AuthorizationApproval.where(
+        user_id: user.matrix_user_id,
+        miniapp_id: miniapp.app_id,
+        scope: scope
+      ).exists?
+
+      if approved || !sensitive_scopes.include?(scope)
+        pre_approved_scopes << scope
+      else
+        consent_required_scopes << scope
+      end
+    end
+
+    if consent_required_scopes.any?
+      session_id = SecureRandom.urlsafe_base64(32)
+      Rails.cache.write("consent:#{session_id}", {
+        user_id: user.matrix_user_id,
+        miniapp_id: miniapp.app_id,
+        pre_approved_scopes: pre_approved_scopes,
+        consent_required_scopes: consent_required_scopes
+      }, expires_in: 15.minutes)
+
+      {
+        authorized_scopes: [],
+        consent_required: true,
+        consent_required_scopes: consent_required_scopes,
+        pre_approved_scopes: pre_approved_scopes,
+        session_id: session_id
+      }
+    else
+      {
+        authorized_scopes: pre_approved_scopes,
+        consent_required: false
+      }
     end
   end
 end

@@ -249,18 +249,34 @@ code_challenge = BASE64URL(SHA256(code_verifier))
 
 ## 7. Implementation Guidelines
 
-### 7.1 Keycloak Integration (as mentioned in PROTO.md)
+### 7.1 Matrix Authentication Service (MAS) Integration (PROTO Section 4.2)
 
-**Realm Configuration:**
-- Dedicated TMCP realm
-- Custom MFA flow providers
-- Scope-based access policies
-- Client registration for mini-apps
+**MAS Client Registration:**
+- TMCP Server registered as confidential client with MAS
+- Client authentication method: `client_secret_post`
+- Grant types: `urn:ietf:params:oauth:grant-type:token-exchange`, `refresh_token`
+- Scope: `urn:matrix:org.matrix.msc2967.client:api:*`
 
-**Client Registration:**
-- Dynamic client registration for mini-apps
-- Pre-registered official apps with privileged scopes
-- Client authentication methods (public vs confidential)
+**Authentication Flows:**
+- **Matrix Session Delegation (RFC 8693)**: For users with active Element session
+  - Sub-second authentication without user interaction
+  - Token exchange from Matrix access token to TEP token
+  - Consent handling for sensitive scopes
+
+- **Device Authorization Grant (RFC 8628)**: For new users without session
+  - User enters code on web interface
+  - Poll-based token retrieval
+  - Exchange MAS token for TEP
+
+- **Authorization Code Flow with PKCE (RFC 7636)**: For web mini-apps
+  - Browser redirect flow
+  - PKCE for security
+  - Exchange authorization code for tokens
+
+**Mini-App Client Registration:**
+- Each mini-app registered in MAS
+- Grant types: `authorization_code`, `urn:ietf:params:oauth:grant-type:device_code`, `urn:ietf:params:oauth:grant-type:token-exchange`, `refresh_token`
+- Scope includes Matrix C-S API scope
 
 ### 7.2 Database Schema
 

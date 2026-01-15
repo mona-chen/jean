@@ -36,7 +36,7 @@ class TepTokenService
   end
 
   class << self
-    def encode(payload, scopes: [], wallet_id: nil, session_id: nil, miniapp_context: {}, mas_session: nil, authorization_context: nil, approval_history: nil)
+    def encode(payload, scopes: [], wallet_id: nil, session_id: nil, miniapp_context: {}, mas_session: nil, authorization_context: nil, approval_history: nil, delegated_from: nil, matrix_session_ref: nil)
       now = Time.current.to_i
 
       jwt_payload = {
@@ -57,7 +57,9 @@ class TepTokenService
         user_context: payload[:user_context] || {},
         mas_session: mas_session || { active: true },
         authorization_context: authorization_context || build_default_authorization_context(payload),
-        approval_history: approval_history || build_approval_history(payload[:user_id], payload[:miniapp_id], scopes)
+        approval_history: approval_history || build_approval_history(payload[:user_id], payload[:miniapp_id], scopes),
+        delegated_from: delegated_from,
+        matrix_session_ref: matrix_session_ref
       }
 
       headers = { kid: KEY_ID }

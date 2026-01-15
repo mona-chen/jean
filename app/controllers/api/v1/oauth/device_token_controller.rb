@@ -41,55 +41,96 @@ class Api::V1::Oauth::DeviceTokenController < ApplicationController
       return
     end
 
-    user_id = authenticate_user_with_mas
-
-    unless user_id
-      render json: {
-        error: "authorization_pending",
-        error_description: "User has not completed authorization"
-      }, status: :bad_request
-      return
-    end
-
-    user = User.find_by(matrix_user_id: user_id)
-    unless user
-      render json: {
-        error: "invalid_grant",
-        error_description: "User not found"
-      }, status: :bad_request
-      return
-    end
-
-    scopes = device_auth[:scopes]
-    miniapp_context = device_auth[:miniapp_context] || {}
-
-    tep_response = exchange_for_tep_token(user, application, scopes, miniapp_context)
-
-    render json: tep_response, status: :ok
+    poll_mas_for_token(device_code, client_id, client_secret)
   end
 
   private
 
-  def authenticate_user_with_mas
-    mock_user_id = params[:user_id] || "mock_user_#{SecureRandom.alphanumeric(8)}"
+  def poll_mas_for_token(device_code, client_id, client_secret)
+    mas_url = ENV["MAS_TOKEN_URL"] || "https://mas.tween.example/oauth2/token"
 
-    if Rails.env.development? || Rails.env.test?
-      return mock_user_id
+    response = Faraday.post(mas_url) do |req|
+      req.headers["Content-Type"] = "application/x-www-form-urlencoded"
+      req.body = URI.encode_www_form({
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+        device_code: device_code,
+        client_id: client_id,
+        client_secret: client_secret
+      })
     end
 
-    mas_client = MasClientService.new
-    mas_client.get_user_info(params[:matrix_access_token])["sub"]
-  rescue MasClientService::MasError, MasClientService::InvalidTokenError
-    nil
+    unless response.success?
+      json_response = JSON.parse(response.body) rescue {}
+
+      case json_response["error"]
+      when "authorization_pending"
+        render json: {
+          error: "authorization_pending",
+          error_description: "User has not completed authorization yet"
+        }, status: :bad_request
+      when "slow_down"
+        render json: {
+          error: "slow_down",
+          error_description: "Polling too frequently"
+        }, status: :bad_request
+      when "expired_token"
+        render json: {
+          error: "expired_token",
+          error_description: "Device authorization has expired"
+        }, status: :bad_request
+      when "access_denied"
+        render json: {
+          error: "access_denied",
+          error_description: "User denied authorization"
+        }, status: :bad_request
+      else
+        render json: json_response, status: :bad_request
+      end
+      return
+    end
+
+    token_data = JSON.parse(response.body)
+
+    mas_user_info = introspect_mas_token(token_data["access_token"])
+
+    unless mas_user_info["active"]
+      render json: {
+        error: "invalid_grant",
+        error_description: "Matrix token is not active"
+      }, status: :bad_request
+      return
+    end
+
+    render json: {
+      access_token: token_data["access_token"],
+      token_type: "Bearer",
+      expires_in: token_data["expires_in"],
+      refresh_token: token_data["refresh_token"],
+      scope: token_data["scope"],
+      user_id: mas_user_info["sub"],
+      message: "Exchange this token for TEP using urn:ietf:params:oauth:grant-type:token-exchange"
+    }, status: :ok
+  rescue JSON::ParserError => e
+    render json: {
+      error: "server_error",
+      error_description: "Invalid response from MAS"
+    }, status: :internal_server_error
   end
 
-  def exchange_for_tep_token(user, application, scopes, miniapp_context)
-    mas_client = MasClientService.new
-    mas_client.exchange_matrix_token_for_tep(
-      params[:matrix_access_token] || "mock_matrix_token",
-      application.uid,
-      scopes,
-      miniapp_context
-    )
+  def introspect_mas_token(access_token)
+    mas_introspection_url = ENV["MAS_INTROSPECTION_URL"] || "https://mas.tween.example/oauth2/introspect"
+    mas_client_id = ENV["MAS_CLIENT_ID"] || "tmcp-server"
+    mas_client_secret = ENV["MAS_CLIENT_SECRET"]
+
+    response = Faraday.post(mas_introspection_url) do |req|
+      req.headers["Content-Type"] = "application/x-www-form-urlencoded"
+      req.body = URI.encode_www_form({
+        token: access_token,
+        client_id: mas_client_id,
+        client_secret: mas_client_secret
+      })
+    end
+
+    JSON.parse(response.body)
   end
 end

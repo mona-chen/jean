@@ -6,7 +6,10 @@ The TMCP Server is a Rails-based Application Service that implements the Tween M
 
 This server implements the TMCP protocol as defined in [PROTO.md](docs/PROTO.md), providing:
 
-- **OAuth 2.0 + PKCE Authentication** with Keycloak integration
+- **OAuth 2.0 + PKCE Authentication** with Matrix Authentication Service (MAS) integration
+- **Matrix Session Delegation** for authenticated users (RFC 8693)
+- **Device Authorization Grant** (RFC 8628) for new users
+- **Authorization Code Flow with PKCE** (RFC 7636) for web mini-apps
 - **TEP Token Management** for mini-app sessions
 - **Wallet Integration** with P2P transfers and payments
 - **Mini-App Storage** with quotas and TTL
@@ -16,7 +19,7 @@ This server implements the TMCP protocol as defined in [PROTO.md](docs/PROTO.md)
 ## Key Components
 
 - **Matrix Synapse**: `core.tween.im` (Homeserver)
-- **Keycloak**: `iam.tween.im` (OAuth Identity Provider)
+- **Matrix Authentication Service (MAS)**: `mas.tween.example` (OAuth Identity Provider)
 - **TMCP Server**: Current repository (Application Service)
 
 ## Quick Start
@@ -26,7 +29,7 @@ This server implements the TMCP protocol as defined in [PROTO.md](docs/PROTO.md)
 - Ruby 3.4.4
 - PostgreSQL (production) or SQLite (development)
 - Matrix Synapse homeserver
-- Keycloak identity provider
+- Matrix Authentication Service (MAS) for OAuth 2.0
 
 ### Installation
 
@@ -40,7 +43,7 @@ bundle install
 
 # Set up environment variables
 cp .env.example .env
-# Edit .env with your Keycloak and Matrix configurations
+# Edit .env with your MAS and Matrix configurations
 
 # Set up database
 rails db:setup
@@ -57,11 +60,13 @@ rails server
 Key environment variables:
 
 ```bash
-# Keycloak OAuth
-KEYCLOAK_URL=https://iam.tween.im
-KEYCLOAK_REALM=tween
-KEYCLOAK_CLIENT_ID=tmcp-server
-KEYCLOAK_CLIENT_SECRET=your-client-secret
+# Matrix Authentication Service (MAS)
+MAS_URL=https://mas.tween.example
+MAS_CLIENT_ID=tmcp-server
+MAS_CLIENT_SECRET=your-client-secret
+MAS_TOKEN_URL=https://mas.tween.example/oauth2/token
+MAS_INTROSPECTION_URL=https://mas.tween.example/oauth2/introspect
+MAS_REVOCATION_URL=https://mas.tween.example/oauth2/revoke
 
 # Matrix Integration
 MATRIX_API_URL=https://core.tween.im
@@ -74,9 +79,11 @@ DATABASE_URL=postgresql://user:pass@localhost/tmcp_production
 ## API Endpoints
 
 ### OAuth 2.0 + PKCE
-- `GET /api/v1/oauth/authorize` - Authorization request
-- `GET /api/v1/oauth/callback` - Keycloak callback
-- `POST /api/v1/oauth/token` - Token exchange
+- `GET /api/v1/oauth/authorize` - Authorization request (web mini-apps)
+- `POST /api/v1/oauth/token` - Token exchange (Matrix Session Delegation)
+- `POST /api/v1/oauth2/device/authorization` - Device authorization (RFC 8628)
+- `POST /api/v1/oauth2/device/token` - Device token polling
+- `POST /api/v1/oauth/consent` - Scope consent approval
 
 ### Wallet Operations
 - `GET /api/v1/wallet/balance` - Get wallet balance
@@ -121,8 +128,6 @@ All architectural documentation is available in the `docs/` directory:
 
 - [PROTO.md](docs/PROTO.md) - Complete protocol specification
 - [TMCP_Architecture_Plan.md](docs/TMCP_Architecture_Plan.md) - System architecture
-- [Authentication_System_Design.md](docs/Authentication_System_Design.md) - OAuth implementation
-- [KEYCLOAK_INTEGRATION.md](docs/KEYCLOAK_INTEGRATION.md) - Keycloak integration guide
 - [Deployment_Architecture_Design.md](docs/Deployment_Architecture_Design.md) - Deployment guide
 
 ## Contributing

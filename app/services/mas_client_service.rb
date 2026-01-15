@@ -89,6 +89,37 @@ class MasClientService
     JSON.parse(response.body)
   end
 
+  def refresh_access_token_for_matrix(current_token)
+    response = http_client.post(@token_url) do |req|
+      req.headers["Content-Type"] = "application/x-www-form-urlencoded"
+      req.body = URI.encode_www_form({
+        grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+        subject_token: current_token,
+        subject_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        scope: @default_scopes.join(" "),
+        client_id: @client_id,
+        client_secret: @client_secret
+      })
+    end
+
+    unless response.success?
+      Rails.logger.warn "Matrix token exchange failed: #{response.body}"
+      return {
+        access_token: current_token,
+        token_type: "Bearer",
+        expires_in: 300
+      }
+    end
+
+    token_data = JSON.parse(response.body)
+    {
+      access_token: token_data["access_token"],
+      token_type: token_data["token_type"],
+      expires_in: token_data["expires_in"]
+    }
+  end
+
   def revoke_token(token, token_type_hint = nil)
     body = {
       token: token,
@@ -117,12 +148,15 @@ class MasClientService
     end
   end
 
-  def exchange_matrix_token_for_tep(matrix_access_token, miniapp_id, scopes, miniapp_context = {})
-    mas_user_info = get_user_info(matrix_access_token)
+  def exchange_matrix_token_for_tep(matrix_access_token, miniapp_id, scopes, miniapp_context = {}, introspection_response = nil)
+    mas_user_info = introspection_response || get_user_info(matrix_access_token)
 
     user_id = mas_user_info["sub"]
     wallet_id = get_or_create_wallet(user_id)
     session_id = generate_session_id
+
+    device_id = mas_user_info.dig("device_id") || "unknown"
+    mas_session_id = mas_user_info.dig("sid") || "unknown"
 
     tep_claims = {
       iss: TMCP.config[:jwt_issuer],
@@ -146,19 +180,39 @@ class MasClientService
       mas_session: {
         active: true,
         refresh_token_id: "rt_#{SecureRandom.alphanumeric(16)}"
-      }
+      },
+      delegated_from: "matrix_session",
+      matrix_session_ref: {
+        device_id: device_id,
+        session_id: mas_session_id
+      },
+      approval_history: build_approval_history(user_id, miniapp_id, scopes),
+      authorization_context: build_authorization_context({ miniapp_context: miniapp_context })
     }
 
     tep_token = TepTokenService.encode(tep_claims)
+    tep_refresh_token = "rt_#{SecureRandom.alphanumeric(24)}"
+
+    Rails.cache.write("refresh_token:#{tep_refresh_token}", {
+      user_id: user_id,
+      miniapp_id: miniapp_id,
+      scope: scopes,
+      created_at: Time.current.to_i
+    }, expires_in: 30.days)
+
+    matrix_token_response = refresh_access_token_for_matrix(matrix_access_token)
 
     {
       access_token: "tep.#{tep_token}",
       token_type: "Bearer",
       expires_in: 86400,
-      refresh_token: "rt_#{SecureRandom.alphanumeric(24)}",
+      refresh_token: tep_refresh_token,
       scope: scopes.join(" "),
       user_id: user_id,
-      wallet_id: wallet_id
+      wallet_id: wallet_id,
+      matrix_access_token: matrix_token_response[:access_token],
+      matrix_expires_in: matrix_token_response[:expires_in],
+      delegated_session: true
     }
   end
 
@@ -194,8 +248,45 @@ class MasClientService
     "sess_#{SecureRandom.alphanumeric(24)}"
   end
 
-  def get_or_create_wallet(user_id)
-    wallet_id = "tw_#{user_id.gsub(/[@:]/, '_')}"
-    wallet_id
+  def build_approval_history(user_id, miniapp_id, scopes)
+    return [] if user_id.nil? || miniapp_id.nil?
+
+    approvals = AuthorizationApproval.where(
+      user_id: user_id,
+      miniapp_id: miniapp_id
+    ).where(scope: scopes).order(approved_at: :desc).limit(10)
+
+    approvals.map do |approval|
+      {
+        scope: approval.scope,
+        approved_at: approval.approved_at.iso8601,
+        approval_method: approval.approval_method || "initial"
+      }
+    end
+  rescue ActiveRecord::StatementInvalid
+    []
   end
-end
+
+  def build_authorization_context(payload)
+    room_id = payload.dig(:miniapp_context, :room_id)
+    return nil if room_id.nil?
+
+    {
+      room_id: room_id,
+      roles: payload.dig(:authorization_context, :roles) || [ "member" ],
+      permissions: build_permissions(payload[:miniapp_context])
+    }
+  end
+
+  def build_permissions(miniapp_context)
+    room_id = miniapp_context[:room_id]
+    return {} if room_id.nil?
+
+    {
+      can_send_messages: true,
+      can_invite_users: false,
+      can_edit_messages: false,
+      can_delete_messages: false,
+      can_add_reactions: true
+    }
+  end
