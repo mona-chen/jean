@@ -74,4 +74,6 @@ Rails.application.configure do
    config.hosts << "docker:3000"
    config.hosts << "localhost"
    config.hosts << "tmcp.tween.im"
+   config.hosts << "pay.tween.im"
+   config.hosts << "stats.tween.im"
 end
