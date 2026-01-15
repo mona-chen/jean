@@ -150,9 +150,8 @@ class MasClientService
 
   def exchange_matrix_token_for_tep(matrix_access_token, miniapp_id, scopes, miniapp_context = {}, introspection_response = nil)
     mas_user_info = introspection_response || get_user_info(matrix_access_token)
-
     user_id = mas_user_info["sub"]
-    wallet_id = get_or_create_wallet(user_id)
+    wallet_id = user_id ? "wallet_#{user_id.gsub(/[@:]/, '_')}" : "wallet_unknown"
     session_id = generate_session_id
 
     device_id = mas_user_info.dig("device_id") || "unknown"
@@ -290,3 +289,4 @@ class MasClientService
       can_add_reactions: true
     }
   end
+end

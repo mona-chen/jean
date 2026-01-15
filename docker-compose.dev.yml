@@ -1,0 +1,151 @@
+# Development Docker Compose with MAS for local testing
+# Usage: docker compose -f docker-compose.dev.yml up -d
+
+version: '3.8'
+
+services:
+  db:
+    image: postgres:14
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tmcp_development}
+      POSTGRES_USER: ${POSTGRES_USER:-tmcp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tmcp_password}
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tmcp} -d ${POSTGRES_DB:-tmcp_development}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_dev_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Matrix Authentication Service (MAS) for local development
+  mas:
+    build:
+      context: .
+      dockerfile: Dockerfile.mas
+    container_name: mas-dev
+    environment:
+      MAS_DATABASE_URL: postgresql://tmcp:tmcp_password@db:5432/mas_dev
+    volumes:
+      - ./dev-mas-data:/app/data
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  tmcp-server:
+    build: .
+    container_name: tmcp-server-dev
+    environment:
+      RAILS_ENV: development
+      DATABASE_URL: ${DATABASE_URL:-postgresql://tmcp:tmcp_password@db:5432/tmcp_development}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:-development_secret_key_base_for_testing_only}
+      BUNDLE_PATH: ${BUNDLE_PATH:-/usr/local/bundle}
+      
+      # TMCP Configuration
+      TMCP_JWT_ISSUER: http://localhost:3000
+      TMCP_JWT_KEY_ID: tmcp-dev-2025-01
+      
+      # Matrix Integration
+      MATRIX_API_URL: ${MATRIX_API_URL:-https://core.tween.im}
+      MATRIX_HS_TOKEN: ${MATRIX_HS_TOKEN}
+      
+      # MAS Configuration (pointing to local dev MAS)
+      MAS_URL: http://docker:8080
+      MAS_CLIENT_ID: GARMJ92HAZ0EBKRSASCWAAGXSA
+      MAS_CLIENT_SECRET_FILE: /run/secrets/mas_client_secret
+      MAS_TOKEN_URL: http://docker:8080/oauth2/token
+      MAS_INTROSPECTION_URL: http://docker:8080/oauth2/introspect
+      MAS_REVOCATION_URL: http://docker:8080/oauth2/revoke
+      
+      # Security
+      FORCE_SSL: false
+      ALLOWED_ORIGINS: http://localhost:3000
+    volumes:
+      - bundle:/usr/local/bundle
+      - ./secrets/tmcp_private_key.txt:/run/secrets/tmcp_private_key:ro
+      - ./secrets/mas_client_secret.txt:/run/secrets/mas_client_secret:ro
+      - .:/config/workspace/jean
+    secrets:
+      - tmcp_private_key
+      - mas_client_secret
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mas:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    stdin_open: true
+    tty: true
+
+  # Admin API client to register TMCP Server as MAS client
+  mas-setup:
+    image: curlimages/curl:latest
+    container_name: mas-setup
+    depends_on:
+      mas:
+        condition: service_healthy
+    volumes:
+      - ./secrets/mas_client_secret.txt:/run/mas_client_secret:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Waiting for MAS to be ready..."
+        sleep 5
+        
+        echo "Registering TMCP Server as MAS client..."
+        curl -s -X POST http://mas:8080/api/admin/v1/clients \
+          -H "Content-Type: application/json" \
+          -d '{
+            "client_id": "tmcp-server",
+            "client_auth_method": "client_secret_post",
+            "client_secret": "'$(cat /run/mas_client_secret)'",
+            "grant_types": [
+              "urn:ietf:params:oauth:grant-type:token-exchange",
+              "refresh_token",
+              "authorization_code",
+              "client_credentials"
+            ],
+            "scope": [
+              "openid",
+              "urn:matrix:org.matrix.msc2967.client:api:*"
+            ],
+            "redirect_uris": [
+              "http://localhost:3000/api/v1/oauth/callback"
+            ]
+          }'
+        
+        echo ""
+        echo "MAS client registration complete!"
+        echo "TMCP Server is now configured to use local MAS at http://mas:8080"
+    restart: "no"
+
+secrets:
+  tmcp_private_key:
+    file: ./secrets/tmcp_private_key.txt
+  mas_client_secret:
+    file: ./secrets/mas_client_secret.txt
+
+volumes:
+  postgres_dev_data:
+  redis_dev_data:
+  bundle:
+  dev-mas-data:

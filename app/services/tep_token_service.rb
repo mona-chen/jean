@@ -8,34 +8,37 @@ class TepTokenService
 
   ALLOWED_ALGORITHMS = %w[RS256 RS384 RS512].freeze
 
+  # Store key in class instance variable
+  @_private_key = nil
+  @_public_key = nil
+
   class << self
     def private_key
-      @private_key ||= load_or_generate_private_key
+      load_key unless @_private_key
+      @_private_key
     end
 
     def public_key
-      @public_key ||= private_key.public_key
+      load_key unless @_public_key
+      @_public_key
     end
 
-    def load_or_generate_private_key
+    def load_key
       if ENV["TMCP_PRIVATE_KEY"].present?
-        OpenSSL::PKey::RSA.new(ENV["TMCP_PRIVATE_KEY"])
+        @_private_key = OpenSSL::PKey::RSA.new(ENV["TMCP_PRIVATE_KEY"])
       else
-        generate_private_key
+        @_private_key = OpenSSL::PKey::RSA.new(2048)
       end
-    end
-
-    def generate_private_key
-      OpenSSL::PKey::RSA.new(2048)
+      @_public_key = @_private_key.public_key
     end
 
     def reset_keys!
-      @private_key = nil
-      @public_key = nil
+      # Force reload from ENV if key is available, otherwise generate
+      @_private_key = nil
+      @_public_key = nil
+      load_key
     end
-  end
 
-  class << self
     def encode(payload, scopes: [], wallet_id: nil, session_id: nil, miniapp_context: {}, mas_session: nil, authorization_context: nil, approval_history: nil, delegated_from: nil, matrix_session_ref: nil)
       now = Time.current.to_i
 
@@ -192,7 +195,7 @@ class TepTokenService
           "Invalid algorithm '#{alg}'. Allowed: #{ALLOWED_ALGORITHMS.join(', ')}"
         )
       end
-     end
+    end
 
     def validate_issuer!(payload)
       return if payload["iss"] == ISSUER
@@ -225,4 +228,7 @@ class TepTokenService
       raise JWT::InvalidIatError.new("Token is not yet valid (nbf claim)")
     end
   end
+
+  # Ensure key is loaded when class is first defined
+  load_key unless @_private_key
 end

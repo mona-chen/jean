@@ -1,0 +1,72 @@
+# Matrix Authentication Service (MAS) Configuration
+# This configures MAS to accept TMCP Server as an OAuth 2.0 client
+# See: https://element-hq.github.io/matrix-authentication-service/reference/configuration.html
+
+version: 2
+
+database:
+  # Use PostgreSQL shared with TMCP
+  enabled: true
+  database_url: postgresql://tmcp:tmcp_password@db:5432/mas
+  pool_size: 10
+
+server:
+  # MAS server hostname (matches what's in the browser URL)
+  hostname: mas.tween.example
+  # Enable HTTP listener on port 8080
+  listeners:
+    - port: 8080
+      resources:
+        - discovery
+        - oauth2
+        - adminapi
+
+# OAuth 2.0 Client Registration for TMCP Server
+# TMCP Server acts as a confidential client
+clients:
+  - client_id: tmcp-server
+    client_auth_method: client_secret_post
+    # Client secret should match secrets/mas_client_secret.txt
+    # In production, use MAS_ADMIN_API_STATIC_CLIENTS__0__CLIENT_SECRET env var
+    client_secret: pF/Y9eiJXTHASLFNPOIzXiym0E9o1J7o5+UsHONumS0=
+    grant_types:
+      - urn:ietf:params:oauth:grant-type:token-exchange
+      - refresh_token
+      - authorization_code
+      - client_credentials
+    scope:
+      - openid
+      - urn:matrix:org.matrix.msc2967.client:api:*
+    redirect_uris:
+      - http://localhost:3000/api/v1/oauth/callback
+      - https://tmcp.example.com/api/v1/oauth/callback
+
+# Token configuration
+tokens:
+  # Access token lifetime
+  access_token_lifetime: 3600
+  # Refresh token lifetime
+  refresh_token_lifetime: 2592000
+  # Authorization code lifetime
+  authorization_code_lifetime: 300
+
+# Session configuration
+sessions:
+  # Enable session storage
+  enabled: true
+  # Session cookie settings
+  cookie:
+    secure: true
+    samesite: "lax"
+
+# Logging configuration
+logging:
+  level: info
+  format: pretty
+
+# CORS configuration for development
+cors:
+  enabled: true
+  origins:
+    - http://localhost:3000
+    - https://tmcp.example.com

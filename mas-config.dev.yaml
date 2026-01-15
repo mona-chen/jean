@@ -1,0 +1,121 @@
+http:
+  listeners:
+  - name: web
+    resources:
+    - name: discovery
+    - name: human
+    - name: oauth
+    - name: compat
+    - name: graphql
+    - name: assets
+    binds:
+    - address: '[::]:8080'
+    proxy_protocol: false
+  - name: internal
+    resources:
+    - name: health
+    binds:
+    - host: localhost
+      port: 8081
+    proxy_protocol: false
+  trusted_proxies:
+  - 192.168.0.0/16
+  - 172.16.0.0/12
+  - 10.0.0.0/10
+  - 127.0.0.1/8
+  - fd00::/8
+  - ::1/128
+  public_base: http://docker:8080/
+  issuer: http://docker:8080/
+database:
+  uri: postgresql://tmcp:tmcp_password@db:5432/mas_dev
+  max_connections: 10
+  min_connections: 0
+  connect_timeout: 30
+  idle_timeout: 600
+  max_lifetime: 1800
+email:
+  from: '"Authentication Service" <root@localhost>'
+  reply_to: '"Authentication Service" <root@localhost>'
+  transport: blackhole
+secrets:
+  encryption: 278b7c6f5a119765622d50f1c5e8d33779f3c3cabdec5f1e9f2c0c2e47918e0f
+  keys:
+  - key: |
+      -----BEGIN RSA PRIVATE KEY-----
+      MIIEpAIBAAKCAQEAuuqZ2H13j77ENBdEunSg3ETbSx5m+V9uCK+agaAmL5AAhQ7R
+      rZ7DX3nUvom8+oS+ehMYDBwAG9AMmCjt2y6J4RYWdUTSqaAkuS4lvbYhLufVFCt8
+      5gx78BK8w0SHX7+ABugoterq5KkeUo6UAvGM7UDIyD6s0n/zaloVXraylPXYEeRt
+      UMm7yOZpegrMjChuxwijqlX4FRz/Mx0hVww/1sbxF3ZX6b8LhtsbRjzhH0QSQVTJ
+      gQCDoVRpedmCILuxYRKh2+fWejVJddSwTjiFdBO+e/B8vh7qyVvvXzNThixYqkJ7
+      NL+/t8eboCRbVOIn2tJ6fKWOf41D0aRafUGzowIDAQABAoIBADKeXdN3Bu3yp4fD
+      1WT5OKbuLsUFErXt1gqcI6d/C1hOExX1kWsHV7l/cNG402i0kjDVAuokmxLtILwE
+      OYXl8Ij4RlSzsqklKUzM5oOd0xa0ycuQi15xew7kxCHNaSvQ3IcCUCQT3lDWS9Pn
+      sMWrTJLjvHweHQdUh0MB6k+gAnS8OKiMxKSwfoSsSG4uezsxsgNDF8OwsUz535aG
+      yINbuDNkHx5klxZfa6f9HIIj0lkwDviEzSrKna0JUzNbMnU8BGsyhD4meZP2zwWc
+      yqyxnMVBDOqCRZkiwipvJIuQHOS319a5YTXNB52Jo/VKIQQBmAwem9Vryv3bBmVf
+      sef8aqECgYEA1bhh8TVxya4Joa9zq5Mtttw1hccdnr78rrCx08LDjXhSVqAeNyGz
+      JxCYDxk6DpNXX1UzXneCi4LZ9SI/EJEQxL7ClA7/7jPFu9GKb4oVUF4dtF+yEF6H
+      /KM6pGfpkaJSIBpSUyHwDPaNt/J0KO3HmV3ZY+j/xEKtMfyf0oLecz0CgYEA3+TE
+      0ZebDu+4/hsmitJd8HI5BedAldYNNXGnJffsNyRK6QNDRzjsMA2W0N/dqKTuI5h5
+      RAo+yN7adVAu/H0NvB9bUBWQgDaBgvY40xA8OgGgJ9SYqMpSvi+Sy/6MY/Kreoe6
+      RNF3ZueEwg6H5DFogQUoDc5yJUJik2m6v18XsF8CgYEA1KuREtTq8RU1UmZkRSTF
+      BcTlocS9Ld3BVhhQLHgP3jQQQ1E8IAJx4vq5RbUFt8FY3W3MG0Hzbt58A1nbxaGF
+      PTLSL0Ep3iA4sKhYCJwwj3PIPVhIuc9HpNfNIBKjMx+Cd52ZtE3+MPgbmCM1AhFz
+      YKMqEyilcugirq5DX9iIgcUCgYEAxwzjMpd/gmr74+YNgRP/8loKekYbNFsmSSJv
+      ASGGf4ujkb+V28curJYYREETFvDyyvCutyAIq5r9S5jq/QzM3jhefTd+zY4n3F+9
+      K2Beuw9g7KhkxIODxpQTBYucEuvXKktq/e3gIruoWsKCbAzFJReJgaTN9HQtoXM5
+      VRRcwi8CgYAwRSVhnj+zo6AXNZkLnAz7/d/IEdQ0WhlDzDaIIOy8LfQYTC1mKNbl
+      GSkX298oqMgeItg20HCZkIBScQtlYPhUM/103J/Z+kZPHHC5bw+/Ej61uUOGTQbO
+      gCKruJiD9IqHaJ+eScQXbK30/mC71+4r8fsiMdNTEa54LINxMx5k+w==
+      -----END RSA PRIVATE KEY-----
+  - key: |
+      -----BEGIN EC PRIVATE KEY-----
+      MHcCAQEEILDwIlWIapkUGsBgZZYX2Zc916OR6S8DCJ/y4OyU9tF9oAoGCCqGSM49
+      AwEHoUQDQgAE+lrsTCD1azbpJ1MiwbU0u2C/OzyMIKo7uQZ93rIMTm0Zy0cDGKs7
+      EGvlH6ILjVgSAwHUCWDzVdXfUEfPVInxIw==
+      -----END EC PRIVATE KEY-----
+  - key: |
+      -----BEGIN EC PRIVATE KEY-----
+      MIGkAgEBBDDsAdLUiN7jdzAszL3eYpvPPcqjNpEqa+ReP+6QVyNL2E7PpPr0BGur
+      dCeyXpJw4/ygBwYFK4EEACKhZANiAAQBzMoc6ZdpAQ7W6zys+bmO7ppGQGG/3qwM
+      AcUwiKfTMCxIkRD7JhAY0sRo0SOJMeyVdathNCav+Y7p+tmR44KTkSpsNXBa9Ama
+      OgnYQrnHOVOyuPKi7w9ZWLBjprJUc/s=
+      -----END EC PRIVATE KEY-----
+  - key: |
+      -----BEGIN EC PRIVATE KEY-----
+      MHQCAQEEIMxbqLd9LFG17zsg6l1/y9He8T0VUMaNKV4CJdbHwyKCoAcGBSuBBAAK
+      oUQDQgAEL+g3jHejGB6uOaHthKDQnOnOeOs9IA/+fhZA3+K54JCfkoq1FC9ABcsF
+      BR9QDRqI4K9UnxhtxvW78IfjKZoThw==
+      -----END EC PRIVATE KEY-----
+passwords:
+  enabled: true
+  schemes:
+  - version: 1
+    algorithm: argon2id
+  minimum_complexity: 3
+matrix:
+  kind: synapse
+  homeserver: docker
+  secret: yGNxigYWripMjhulsuCPSavWDpBgUigc
+  endpoint: http://homeserver:8008/
+
+clients:
+  - client_id: GARMJ92HAZ0EBKRSASCWAAGXSA
+    client_auth_method: client_secret_post
+    client_secret: pF/Y9eiJXTHASLFNPOIzXiym0E9o1J7o5+UsHONumS0=
+    grant_types:
+      - urn:ietf:params:oauth:grant-type:token-exchange
+      - refresh_token
+      - authorization_code
+      - client_credentials
+    scope:
+      - openid
+      - urn:matrix:org.matrix.msc2967.client:api:*
+    redirect_uris:
+      - http://localhost:3000/api/v1/oauth/callback
+      - http://docker:3000/api/v1/oauth/callback
+
+account:
+  password_registration_enabled: false
+  password_recovery_enabled: false

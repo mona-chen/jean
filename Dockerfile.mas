@@ -1,0 +1,22 @@
+FROM debian:bookworm-slim
+
+# Install dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libpq5 \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download mas-cli
+RUN wget -q "https://github.com/element-hq/matrix-authentication-service/releases/latest/download/mas-cli-x86_64-linux.tar.gz" && \
+    tar xzf mas-cli-x86_64-linux.tar.gz && \
+    mv mas-cli /usr/local/bin/ && \
+    chmod +x /usr/local/bin/mas-cli && \
+    rm mas-cli-x86_64-linux.tar.gz
+
+# Copy config
+COPY mas-config.dev.yaml /app/config.yaml
+
+EXPOSE 8080
+
+CMD ["mas-cli", "server", "-c", "/app/config.yaml"]
