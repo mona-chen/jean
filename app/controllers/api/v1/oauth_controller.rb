@@ -291,7 +291,7 @@ class Api::V1::OauthController < ApplicationController
 
       render json: tep_response
 
-    rescue MasClientService::InvalidTokenError, MasClientService::MasError => e
+    rescue MasClientService::InvalidTokenError, MasClientService::InvalidCredentialsError, MasClientService::MasError => e
       render json: {
         error: "invalid_grant",
         error_description: e.message

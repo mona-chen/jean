@@ -4,6 +4,7 @@ class MasClientService
   class MasError < StandardError; end
   class TokenRefreshError < MasError; end
   class InvalidTokenError < MasError; end
+  class InvalidCredentialsError < MasError; end
 
   attr_reader :client_id, :client_secret, :token_url, :introspection_url, :revocation_url
 
@@ -35,7 +36,7 @@ class MasClientService
     end
 
     unless response.success?
-      raise MasError, "Client credentials grant failed: #{response.body}"
+      parse_mas_error(response)
     end
 
     token_data = JSON.parse(response.body)
@@ -83,7 +84,7 @@ class MasClientService
     end
 
     unless response.success?
-      raise MasError, "Token introspection failed: #{response.body}"
+      parse_mas_error(response)
     end
 
     JSON.parse(response.body)
@@ -240,6 +241,25 @@ wallet_id = user_id ? "tw_#{user_id.gsub(/[@:]/, '_')}" : "tw_unknown"
       @client_secret = File.read(@client_secret_file).strip
     elsif !@client_secret
       raise MasError, "MAS client secret not configured"
+    end
+  end
+
+  def parse_mas_error(response)
+    begin
+      error_data = JSON.parse(response.body)
+      mas_error = error_data["error"]
+      mas_description = error_data["error_description"]
+
+      case mas_error
+      when "invalid_client"
+        raise InvalidCredentialsError, "Matrix authentication service error"
+      when "invalid_token"
+        raise InvalidTokenError, mas_description || "Matrix token is invalid or expired"
+      else
+        raise MasError, mas_description || "Matrix authentication service error"
+      end
+    rescue JSON::ParserError
+      raise MasError, "Matrix authentication service error"
     end
   end
 

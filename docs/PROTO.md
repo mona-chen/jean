@@ -5842,9 +5842,9 @@ public boolean shouldOverrideUrlLoading(WebView view, String url) {
 
     // Whitelist allowed domains
     List<String> allowedDomains = Arrays.asList(
-        "miniapp.example.com",
-        "cdn.tween.example",
-        "tmcp.example.com"
+        "wallet.tween.im",
+        "cdn.tween.im",
+        "tmcp.tween.im"
     );
 
     String host = uri.getHost();
