@@ -32,6 +32,7 @@ class MiniAppYamlLoader
 
   def self.sync_mini_app(app_config)
     app_id = app_config["app_id"]
+    client_type = app_config["oauth_client_type"] || "public"
 
     # Find or create the mini-app
     mini_app = MiniApp.find_or_initialize_by(app_id: app_id)
@@ -42,6 +43,7 @@ class MiniAppYamlLoader
       description: app_config["description"],
       version: app_config["version"],
       classification: app_config["classification"],
+      client_type: client_type,
       developer_name: app_config["developer_name"],
       manifest: app_config["manifest"],
       status: :active  # Official mini-apps are always active
@@ -85,15 +87,17 @@ class MiniAppYamlLoader
 
   def self.create_oauth_application(miniapp)
     # Create Doorkeeper OAuth application for the mini-app
+    client_type = miniapp.client_type || "public"
+
     oauth_app = Doorkeeper::Application.find_or_create_by!(uid: miniapp.app_id) do |app|
       app.name = miniapp.name
-      app.secret = SecureRandom.hex(32)
+      app.secret = client_type == "confidential" ? SecureRandom.hex(32) : nil
       app.redirect_uri = miniapp.manifest["redirect_uris"].join("\n")
       app.scopes = miniapp.manifest["scopes"].join(" ")
-      app.confidential = true
+      app.confidential = client_type == "confidential"
     end
 
-    Rails.logger.info "Created OAuth application for mini-app #{miniapp.app_id}: #{oauth_app.uid}"
+    Rails.logger.info "Created OAuth application for mini-app #{miniapp.app_id}: #{oauth_app.uid} (client_type: #{client_type}, confidential: #{client_type == "confidential"})"
 
     oauth_app
   rescue => e

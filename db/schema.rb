@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_01_06_075136) do
+ActiveRecord::Schema[8.1].define(version: 2026_01_16_022938) do
   create_table "authorization_approvals", force: :cascade do |t|
     t.string "approval_method"
     t.datetime "approved_at"
@@ -62,6 +62,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_06_075136) do
   create_table "mini_apps", force: :cascade do |t|
     t.string "app_id"
     t.integer "classification"
+    t.string "client_type", default: "public", null: false
     t.datetime "created_at", null: false
     t.text "description"
     t.string "developer_name"
@@ -72,6 +73,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_06_075136) do
     t.datetime "updated_at", null: false
     t.string "version"
     t.index ["app_id"], name: "index_mini_apps_on_app_id"
+    t.index ["client_type"], name: "index_mini_apps_on_client_type"
   end
 
   create_table "miniapp_installations", force: :cascade do |t|

@@ -129,11 +129,14 @@ class Api::V1::OauthController < ApplicationController
   def token
     raw_params = params
 
-    if raw_params[:grant_type] == "urn:ietf:params:oauth:grant-type:token-exchange"
+    grant_type = raw_params[:grant_type]
+    Rails.logger.info "Received token request with grant_type: #{grant_type.inspect}"
+
+    if grant_type == "urn:ietf:params:oauth:grant-type:token-exchange"
       handle_matrix_session_delegation(raw_params)
-    elsif raw_params[:grant_type] == "authorization_code"
+    elsif grant_type == "authorization_code"
       handle_authorization_code_flow(raw_params)
-    elsif raw_params[:grant_type] == "refresh_token"
+    elsif grant_type == "refresh_token"
       handle_refresh_token_flow(raw_params)
     else
       render json: { error: "unsupported_grant_type" }, status: :bad_request
@@ -210,12 +213,26 @@ class Api::V1::OauthController < ApplicationController
       return
     end
 
-    unless application.secret == client_secret
-      render json: {
-        error: "invalid_client",
-        error_description: "Invalid client credentials"
-      }, status: :unauthorized
-      return
+    miniapp = MiniApp.find_by(app_id: client_id)
+    client_type = miniapp&.client_type || "public"
+
+    if client_type == "confidential"
+      client_secret = params[:client_secret]
+      if client_secret.blank?
+        render json: {
+          error: "invalid_client",
+          error_description: "client_secret is required for confidential clients"
+        }, status: :unauthorized
+        return
+      end
+
+      unless application.secret == client_secret
+        render json: {
+          error: "invalid_client",
+          error_description: "Invalid client credentials"
+        }, status: :unauthorized
+        return
+      end
     end
 
     mas_client = MasClientService.new(

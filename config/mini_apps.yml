@@ -1,5 +1,5 @@
 # Official Mini-Apps Configuration
-# This file defines the official mini-apps that are automatically created and approved
+# This file defines official mini-apps that are automatically created and approved
 # Changes to this file can be applied with: rails mini_apps:load_from_yaml
 
 official_mini_apps:
@@ -8,6 +8,7 @@ official_mini_apps:
     description: Official Tween wallet and payment application
     version: "1.0.0"
     classification: official
+    oauth_client_type: public
     developer_name: Tween IM
     manifest:
       permissions:
@@ -33,8 +34,8 @@ official_mini_apps:
       icon_url: "https://cdn.tween.im/icons/tweenpay.png"
       categories:
         - finance
-        - wallet
-        - payments
+          - wallet
+          - payments
       features:
         - p2p_payments
         - balance_check
@@ -48,6 +49,7 @@ official_mini_apps:
     description: Official Tween marketplace for buying and selling
     version: "1.0.0"
     classification: official
+    oauth_client_type: public
     developer_name: Tween IM
     manifest:
       permissions:
@@ -69,8 +71,8 @@ official_mini_apps:
       icon_url: "https://cdn.tween.im/icons/tweenshop.png"
       categories:
         - shopping
-        - marketplace
-        - commerce
+          - marketplace
+          - commerce
       features:
         - product_listings
         - secure_payments
@@ -83,6 +85,7 @@ official_mini_apps:
     description: Official social media wall application
     version: "1.0.0"
     classification: official
+    oauth_client_type: public
     developer_name: Tween IM
     manifest:
       permissions:
@@ -106,9 +109,9 @@ official_mini_apps:
       icon_url: "https://cdn.tween.im/icons/tweenwall.png"
       categories:
         - social
-        - media
-        - entertainment
-        - content
+          - media
+          - entertainment
+          - content
       features:
         - social_feed
         - photo_sharing
@@ -128,6 +131,7 @@ official_mini_apps:
     description: Official gaming platform with wallet integration
     version: "1.0.0"
     classification: official
+    oauth_client_type: public
     developer_name: Tween IM
     manifest:
       permissions:
@@ -149,8 +153,8 @@ official_mini_apps:
       icon_url: "https://cdn.tween.im/icons/tweengames.png"
       categories:
         - gaming
-        - entertainment
-        - social
+          - entertainment
+          - social
       features:
         - multiplayer_games
         - tournament_system
@@ -163,6 +167,7 @@ official_mini_apps:
     description: Test mini-app for development
     version: "0.1.0"
     classification: official
+    oauth_client_type: public
     developer_name: Tween IM
     manifest:
       permissions:
@@ -180,6 +185,6 @@ official_mini_apps:
       icon_url: "https://cdn.tween.im/icons/testapp.png"
       categories:
         - development
-        - testing
+          - testing
       features:
         - test_functionality

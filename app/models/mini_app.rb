@@ -3,6 +3,9 @@ class MiniApp < ApplicationRecord
   enum :classification, { official: 0, verified: 1, community: 2, beta: 3 }
   enum :status, { active: 0, deprecated: 1, removed: 2 }
 
+  # Client type: public, confidential, or hybrid
+  validates :client_type, presence: true, inclusion: { in: %w[public confidential hybrid], message: "must be public, confidential, or hybrid" }
+
   # Relationships
   has_many :miniapp_installations, foreign_key: :miniapp_id
   has_many :installed_users, through: :miniapp_installations, source: :user

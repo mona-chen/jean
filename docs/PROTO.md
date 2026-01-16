@@ -324,8 +324,11 @@ Tokens from MAS MUST be cached with appropriate TTL (4-5 minutes recommended) to
 The TMCP Server MUST implement an OAuth 2.0 token endpoint at `/oauth2/token` for TEP token issuance. The endpoint MUST:
 
 1. **Client Authentication**:
-   - Validate `client_id` and `client_secret` against registered mini-app credentials
-   - Reject requests with invalid credentials using HTTP 401 Unauthorized
+   - For Matrix Session Delegation flow: Validate `client_id` corresponds to a registered mini-app (no client_secret required)
+   - For Device Authorization Grant and Authorization Code Grant with PKCE: Validate `client_id` corresponds to a registered mini-app (no client_secret required for public clients)
+   - For confidential client requests (backend servers): Validate `client_id` and `client_secret` against registered credentials
+   - For hybrid clients: Both public client (frontend) and confidential client (backend) authentications supported
+   - Reject requests with invalid client_id using HTTP 401 Unauthorized
 
 2. **User Identification**:
    - Extract Matrix access token from request
@@ -586,7 +589,6 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 &subject_token=<MATRIX_ACCESS_TOKEN>
 &subject_token_type=urn:ietf:params:oauth:token-type:access_token
 &client_id=ma_shop_001
-&client_secret=<CLIENT_SECRET>
 &scope=user:read wallet:pay storage:write
 &requested_token_type=urn:tmcp:params:oauth:token-type:tep
 &miniapp_context={"room_id":"!abc:tween.example","launch_source":"chat_bubble"}
@@ -600,7 +602,6 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 | `subject_token` | Yes | Matrix access token from Element session |
 | `subject_token_type` | Yes | MUST be `urn:ietf:params:oauth:token-type:access_token` |
 | `client_id` | Yes | Mini-app client identifier |
-| `client_secret` | Yes | Mini-app client secret |
 | `scope` | No | Space-separated TMCP scopes requested |
 | `requested_token_type` | No | MUST be `urn:tmcp:params:oauth:token-type:tep` if provided |
 | `miniapp_context` | No | JSON object with launch context (room_id, etc.) |
@@ -611,7 +612,7 @@ The TMCP Server MUST process token exchange requests in the following sequence:
 
 1. **Subject Token Validation**: The server MUST introspect the subject_token at the MAS introspection endpoint using TMCP Server's client credentials. The introspection response MUST indicate `active: true` and contain a valid `sub` claim representing the Matrix User ID.
 
-2. **Client Authentication**: The server MUST validate the client_id and client_secret provided in the request against the registered mini-app credentials.
+2. **Client Validation**: The server MUST validate the client_id corresponds to a registered mini-app. No client_secret is required for Matrix Session Delegation flow.
 
 3. **Scope Authorization**: For each requested scope:
    - If the scope is registered as a pre-approved scope for the mini-app, authorize without requiring user consent
@@ -743,7 +744,6 @@ Content-Type: application/x-www-form-urlencoded
 grant_type=urn:ietf:params:oauth:grant-type:device_code
 &device_code=GmRhmhcxhwAzkoEqiMEg_DnyEysNkuNhszIySk9eS
 &client_id=ma_shop_001
-&client_secret=<CLIENT_SECRET>
 ```
 
 **Step 5: Token Response**
@@ -799,13 +799,611 @@ grant_type=authorization_code
 &code=auth_code_from_redirect
 &redirect_uri=https://miniapp.example.com/callback
 &client_id=ma_shop_001
-&client_secret=<CLIENT_SECRET>
 &code_verifier=<CODE_VERIFIER>
 ```
 
 **Step 4: Token Response (Same as Device Flow)**
 
-### 4.4 TEP Token Structure
+### 4.4 Developer Authentication
+
+**Purpose:**
+
+This section defines the protocol for developer enrollment, authentication, and access management in TMCP. Developers MUST authenticate to register mini-apps, manage their apps, and access developer tools.
+
+**Prerequisites:**
+
+- Developer MUST have an active Matrix account
+- Developer's Matrix user ID MUST be whitelisted in TMCP Server configuration
+- TMCP Server MUST be registered as a confidential client in MAS
+- Developer enrollment endpoint MUST be accessible
+
+#### 4.4.1 Developer Enrollment Flow
+
+**Protocol Flow:**
+
+```
+Matrix Developer Account
+     │
+     │ Developer accesses TMCP Developer Portal
+     │ https://developer.tmcp.example.com
+     ↓
+  ┌────────────────────────────────────────────────┐
+  │ Developer Authentication                       │
+  │                                              │
+  │ 1. Developer logs in with Matrix account   │
+  │    - Uses existing Matrix session          │
+  │    - No separate signup required          │
+  │                                              │
+  │ 2. TMCP Portal redirects to MAS authorize   │
+  │    - scope: developer:register            │
+  │    - Matrix user already authenticated     │
+  │                                              │
+  │ 3. Developer approves TMCP access          │
+  │    - Read profile information             │
+  │    - Register as developer              │
+  └──────────────────────┬─────────────────────┘
+                       │
+                       │ MAS returns access_token
+                       ↓
+  ┌────────────────────────────────────────────────┐
+  │ TMCP Server Issues DEVELOPER_TOKEN          │
+  │                                              │
+  │ 1. Validate Matrix access token           │
+  │    - Introspect at MAS endpoint            │
+  │    - Check developer whitelist status       │
+  │                                              │
+  │ 2. Create developer profile             │
+  │    - developer_id: @dev:tween.example    │
+  │    - roles: ["developer"]                 │
+  │    - status: "active"                    │
+  │                                              │
+  │ 3. Issue DEVELOPER_TOKEN (JWT)          │
+  │    - 24-hour lifetime                    │
+  │    - Includes developer claims            │
+  │    - Includes organization claims          │
+  └──────────────────────┬─────────────────────┘
+                       │
+                       │ Developer receives token
+                       ↓
+  ┌────────────────────────────────────────────────┐
+  │ Developer Uses Token                        │
+  │                                              │
+  │ - Register mini-apps                       │
+  │ - Manage webhooks                           │
+  │ - Access developer dashboard               │
+  │ - Monitor analytics                         │
+  └────────────────────────────────────────────────┘
+```
+
+**Developer Enrollment Request:**
+
+```http
+GET /oauth2/developer/authorize HTTP/1.1
+Host: developer.tmcp.example.com
+```
+
+The TMCP Developer Portal MUST:
+
+1. Detect if user has active Matrix session
+2. Redirect to MAS authorization endpoint:
+
+```
+GET /oauth2/authorize?
+    response_type=code&
+    client_id=tmcp_developer_portal_001&
+    redirect_uri=https://developer.tmcp.example.com/callback&
+    scope=urn:matrix:org.matrix.msc2967.client:api:* developer:register&
+    state=<random_state>
+```
+
+3. After developer approves, MAS redirects back with authorization code
+4. TMCP Server exchanges code for access token
+5. TMCP Server validates developer and issues DEVELOPER_TOKEN
+
+#### 4.4.2 Developer Token (DEVELOPER_TOKEN) Structure
+
+The TMCP Server issues developer tokens as JWTs (RFC 7519) with the following structure:
+
+**Header:**
+```json
+{
+  "alg": "RS256",
+  "typ": "JWT",
+  "kid": "tmcp-dev-2025-12"
+}
+```
+
+**Payload:**
+```json
+{
+  "iss": "https://tmcp.example.com",
+  "sub": "@dev:tween.example",
+  "aud": "tmcp_developer_api",
+  "exp": 1735689600,
+  "iat": 1735603200,
+  "nbf": 1735603200,
+  "jti": "dev-token-abc123",
+  "token_type": "developer_token",
+  "developer_id": "@dev:tween.example",
+  "roles": ["developer"],
+  "organizations": [
+    {
+      "org_id": "org_example_001",
+      "name": "Example Corp",
+      "role": "admin"
+    }
+  ],
+  "permissions": [
+    "miniapp:register",
+    "miniapp:manage",
+    "webhook:configure"
+  ]
+}
+```
+
+**Claims Definition:**
+
+| Claim | Required | Description |
+|-------|----------|-------------|
+| `iss` | Yes | TMCP Server URL |
+| `sub` | Yes | Matrix User ID of developer |
+| `aud` | Yes | MUST be `tmcp_developer_api` |
+| `exp` | Yes | Expiration time (24 hours from issuance) |
+| `iat` | Yes | Issuance timestamp |
+| `nbf` | Yes | Not before timestamp |
+| `jti` | Yes | Unique token identifier |
+| `token_type` | Yes | MUST be `developer_token` |
+| `developer_id` | Yes | Matrix User ID of developer |
+| `roles` | Yes | Array of developer roles |
+| `organizations` | Yes | Array of organizations developer belongs to |
+| `permissions` | Yes | Array of granted permissions |
+
+#### 4.4.3 Developer Token Issuance
+
+**Authorization Endpoint Response:**
+
+```http
+HTTP/1.1 302 Found
+Location: https://developer.tmcp.example.com/auth?code=xyz123&state=abc456
+```
+
+**Token Exchange:**
+
+```http
+POST /oauth2/developer/token HTTP/1.1
+Host: developer.tmcp.example.com
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code
+&code=xyz123
+&redirect_uri=https://developer.tmcp.example.com/callback
+&client_id=tmcp_developer_portal_001
+```
+
+**Developer Token Response:**
+
+```json
+{
+  "access_token": "dev.eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "Bearer",
+  "expires_in": 86400,
+  "refresh_token": "rt_dev_abc123",
+  "developer_id": "@dev:tween.example",
+  "roles": ["developer"],
+  "organizations": [
+    {
+      "org_id": "org_example_001",
+      "name": "Example Corp",
+      "role": "admin"
+    }
+  ]
+}
+```
+
+**TMCP Server Processing Requirements:**
+
+The TMCP Server MUST process developer token requests as follows:
+
+1. **Authorization Code Validation**:
+   - Validate authorization code received from MAS
+   - Verify code is not expired
+   - Verify redirect_uri matches registration
+
+2. **Matrix User Introspection**:
+   - Introspect Matrix access token at MAS endpoint
+   - Verify `active` claim is true
+   - Extract Matrix User ID from `sub` claim
+
+3. **Developer Whitelist Verification**:
+   - Check if Matrix User ID is in developer whitelist
+   - If not whitelisted, return HTTP 403 Forbidden with error: `developer_not_whitelisted`
+
+4. **Developer Profile Creation**:
+   - Create developer profile if not exists
+   - Assign default role: `developer`
+   - Create default organization if developer is standalone
+
+5. **Developer Token Issuance**:
+   - Issue JWT with developer claims
+   - Set expiration to 24 hours
+   - Include organization and permission claims
+   - Issue refresh_token for future renewals
+
+#### 4.4.4 Organization Management
+
+**Organization Structure:**
+
+Developers MAY belong to organizations. Organizations enable team-based development and role-based access control.
+
+**Create Organization Request:**
+
+```http
+POST /organizations/v1/create HTTP/1.1
+Host: tmcp.example.com
+Authorization: Bearer <DEVELOPER_TOKEN>
+Content-Type: application/json
+
+{
+  "name": "Example Corp",
+  "description": "e-commerce mini-apps",
+  "website": "https://example.com",
+  "contact_email": "admin@example.com"
+}
+```
+
+**Create Organization Response:**
+
+```json
+{
+  "org_id": "org_example_001",
+  "name": "Example Corp",
+  "description": "e-commerce mini-apps",
+  "created_by": "@dev:tween.example",
+  "created_at": "2025-01-16T10:00:00Z",
+  "roles": [
+    {
+      "matrix_user_id": "@dev:tween.example",
+      "role": "admin"
+    }
+  ]
+}
+```
+
+**Invite Member Request:**
+
+```http
+POST /organizations/v1/{org_id}/members HTTP/1.1
+Host: tmcp.example.com
+Authorization: Bearer <DEVELOPER_TOKEN>
+Content-Type: application/json
+
+{
+  "matrix_user_id": "@alice:tween.example",
+  "role": "developer"
+}
+```
+
+**Invite Member Response:**
+
+```json
+{
+  "invitation_id": "inv_abc123",
+  "org_id": "org_example_001",
+  "matrix_user_id": "@alice:tween.example",
+  "role": "developer",
+  "invited_by": "@dev:tween.example",
+  "invited_at": "2025-01-16T10:05:00Z",
+  "status": "pending"
+}
+```
+
+**Role-Based Access Control (RBAC):**
+
+| Role | Permissions | Can Register Mini-Apps? | Can Manage Webhooks? | Can Invite Members? |
+|------|-------------|------------------------|---------------------|---------------------|
+| `admin` | Full access | Yes | Yes | Yes |
+| `developer` | Register and manage mini-apps | Yes | Yes | No |
+| `viewer` | Read-only access | No | No | No |
+
+#### 4.4.5 Developer Token Refresh
+
+**Refresh Request:**
+
+```http
+POST /oauth2/developer/token HTTP/1.1
+Host: tmcp.example.com
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=refresh_token
+&refresh_token=rt_dev_abc123
+&client_id=tmcp_developer_portal_001
+```
+
+**Refresh Response:**
+
+```json
+{
+  "access_token": "dev.eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "Bearer",
+  "expires_in": 86400,
+  "refresh_token": "rt_dev_def456"
+}
+```
+
+**TMCP Server Processing Requirements:**
+
+The TMCP Server MUST process developer token refresh requests as follows:
+
+1. **Refresh Token Validation**:
+   - Validate refresh_token is not revoked
+   - Verify refresh_token corresponds to valid developer
+   - Check developer status is still `active`
+
+2. **Developer Profile Verification**:
+   - Load developer profile from database
+   - Verify developer is still whitelisted
+   - Update organization and role claims
+
+3. **New Token Issuance**:
+   - Issue new developer token with updated claims
+   - Issue new refresh_token (invalidate previous)
+   - Set expiration to 24 hours
+
+#### 4.4.6 Developer Token Validation
+
+TMCP Server MUST validate developer tokens on each protected endpoint.
+
+**Validation Requirements:**
+
+1. **Token Structure Validation**:
+   - Verify JWT signature using TMCP Server public key
+   - Verify algorithm is `RS256`
+   - Verify `token_type` claim is `developer_token`
+
+2. **Token Claims Validation**:
+   - Verify `exp` claim is in the future
+   - Verify `nbf` claim is in the past or present
+   - Verify `aud` claim is `tmcp_developer_api`
+
+3. **Developer Status Validation**:
+   - Verify developer exists and status is `active`
+   - Verify developer is whitelisted
+   - Verify developer has required permissions
+
+4. **Permission Check**:
+   - Verify developer has required role
+   - Verify developer belongs to organization (if required)
+   - Check endpoint-specific permissions
+
+**Error Response (Invalid Developer Token):**
+
+```json
+{
+  "error": "invalid_developer_token",
+  "error_description": "Developer token is invalid or expired"
+}
+```
+
+**Error Response (Insufficient Permissions):**
+
+```json
+{
+  "error": "insufficient_permissions",
+  "error_description": "Developer does not have required permission: miniapp:register"
+}
+```
+
+#### 4.4.7 Developer Logout
+
+**Logout Request:**
+
+```http
+POST /oauth2/developer/revoke HTTP/1.1
+Host: tmcp.example.com
+Authorization: Bearer <DEVELOPER_TOKEN>
+Content-Type: application/x-www-form-urlencoded
+
+token=<DEVELOPER_TOKEN>
+token_type_hint=developer_token
+```
+
+**Logout Response:**
+
+```json
+{
+  "revoked": true,
+  "message": "Developer token and refresh token have been revoked"
+}
+```
+
+**TMCP Server Processing Requirements:**
+
+The TMCP Server MUST process developer logout requests as follows:
+
+1. **Token Revocation**:
+   - Mark developer token as revoked in database
+   - Mark corresponding refresh_token as revoked
+   - Remove from token allowlist
+
+2. **Session Cleanup**:
+   - Clear any cached developer sessions
+   - Remove from active connections list
+
+3. **Response**:
+   - Return HTTP 200 OK with confirmation
+   - Developer MUST discard local token storage
+
+#### 4.4.8 Security Considerations
+
+**Developer Whitelist Management:**
+
+TMCP Server administrators MUST:
+
+1. **Maintain Developer Whitelist**:
+   - Whitelist Matrix User IDs of trusted developers
+   - Verify developer identity before whitelisting
+   - Regularly audit whitelist for unauthorized entries
+
+2. **Revoke Developer Access**:
+   - Remove Matrix User ID from whitelist to revoke access
+   - Immediately invalidate active developer tokens
+   - Block new token issuances for revoked developers
+
+**Token Security:**
+
+1. **Token Lifetime**:
+   - Developer tokens MUST expire within 24 hours
+   - Refresh tokens MUST be single-use
+   - Tokens MUST be invalidated on logout
+
+2. **Token Storage**:
+   - Developers MUST store tokens securely (encrypted)
+   - Tokens MUST be transmitted over HTTPS
+   - Tokens MUST NOT be logged or exposed in error messages
+
+3. **Token Compromise Response**:
+   - Developer MUST have mechanism to revoke compromised tokens
+   - TMCP Server MUST provide emergency revocation endpoint
+   - TMCP Server MUST log all token issuances and revocations
+
+**Organization Security:**
+
+1. **Member Invitation**:
+   - Only admins MAY invite new members
+   - Invited members MUST verify their Matrix account
+   - Invitation links MUST expire within 7 days
+
+2. **Role Assignment**:
+   - Only admins MAY assign `admin` role
+   - Role changes MUST be audited
+   - Developers MAY NOT escalate their own permissions
+
+#### 4.4.9 Developer Console Authentication
+
+**Purpose:**
+
+This section clarifies the authentication model for the TMCP Developer Portal/Console and how it differs from mini-app authentication.
+
+**Developer Console vs. Mini-App Distinction:**
+
+| Aspect | Developer Console | Mini-App |
+|--------|-------------------|-----------|
+| **Purpose** | Platform administration for developers | User-facing application for end users |
+| **Target Audience** | Developers registering and managing mini-apps | End users of Tween platform |
+| **Authentication** | Uses platform service credentials (client_id + client_secret) | Uses OAuth 2.0 flows (PKCE, Matrix Session Delegation) |
+| **Registration** | Configured during TMCP Server deployment | Registered via Developer Console |
+| **User Context** | No end-user context (developer identity) | Has end-user context (Matrix user) |
+| **Privileges** | Elevated platform privileges | Limited to granted scopes |
+| **Requires Mini-App Registration** | NO | YES |
+
+**Developer Console Architecture:**
+
+The TMCP Developer Console is NOT a mini-app. It is a privileged platform application configured during TMCP Server deployment:
+
+```
+TMCP Server Deployment
+  ↓
+Administrators configure platform service credentials:
+  └─ client_id: tmcp_developer_console_001
+  └─ client_secret: <CONFIGURED_DEPLOYMENT_SECRET>
+  └─ scopes: developer:register, developer:manage, admin:*
+  ↓
+Developer Console authenticates directly with TMCP Server
+  └─ Uses client_secret_post authentication
+  └─ No OAuth flow required (trusted platform service)
+  └─ Can issue DEVELOPER_TOKENs to whitelisted developers
+```
+
+**Developer Console Endpoints:**
+
+The TMCP Developer Console has direct access to TMCP Server endpoints that are NOT accessible to mini-apps:
+
+| Endpoint | Purpose | Mini-Apps Can Access? |
+|----------|---------|------------------------|
+| `POST /oauth2/developer/token` | Issue developer tokens | NO |
+| `POST /organizations/v1/create` | Create organizations | NO |
+| `POST /organizations/v1/{org_id}/members` | Invite organization members | NO |
+| `GET /admin/developers/whitelist` | View developer whitelist | NO |
+| `POST /admin/developers/whitelist` | Add to developer whitelist | NO |
+| `DELETE /admin/developers/{dev_id}` | Remove from whitelist | NO |
+
+**Authentication: Developer Console Endpoints:**
+
+```http
+POST /oauth2/developer/token HTTP/1.1
+Host: tmcp.example.com
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code
+&code=<MATRIX_AUTH_CODE>
+&redirect_uri=https://developer.tmcp.example.com/callback
+&client_id=tmcp_developer_console_001
+&client_secret=<CONFIGURED_DEPLOYMENT_SECRET>
+```
+
+**Note:** The `client_secret` in this request is the platform service credential configured during TMCP Server deployment, NOT a developer token. This secret is shared only between TMCP Server and the Developer Console application.
+
+**Mini-App Registration Bootstrapping:**
+
+The registration flow for mini-apps is:
+
+```
+1. Developer Console (platform service)
+   - Has client_id + client_secret from deployment
+   - Can issue DEVELOPER_TOKENs
+   - Developer logs in via Matrix OAuth
+   - Receives DEVELOPER_TOKEN (JWT)
+
+2. Developer (Matrix user)
+   - Has DEVELOPER_TOKEN
+   - Uses it to register mini-apps
+   - Registers mini-app with public, confidential, or hybrid type
+   - Receives mini-app credentials (client_id, client_secret if needed)
+
+3. Mini-App (user-facing app)
+   - Uses mini-app credentials
+   - Authenticates end users via OAuth flows
+   - Has no access to platform administration endpoints
+```
+
+**Why Developer Console is Not a Mini-App:**
+
+1. **Chicken-and-Egg Problem**: If Developer Console were a mini-app, it would require a DEVELOPER_TOKEN to register itself, creating a circular dependency.
+
+2. **Different Trust Model**: Developer Console is a trusted platform service configured by administrators, while mini-apps are third-party applications reviewed and approved through governance process.
+
+3. **Different Privileges**: Developer Console requires elevated platform privileges (whitelist management, token issuance, organization management) that mini-apps must NOT have access to.
+
+4. **Different Authentication**: Developer Console uses service-to-service authentication (client_secret_post) while mini-apps use user-facing OAuth 2.0 flows.
+
+**Security Implications:**
+
+TMCP Server administrators MUST:
+
+1. **Secure Developer Console Credentials**:
+   - The `client_secret` for `tmcp_developer_console_001` MUST be securely stored
+   - This secret MUST be rotated according to security policy
+   - This secret MUST have minimal scopes required for developer console operations
+
+2. **Separate Service Accounts**:
+   - Developer Console uses separate service account from TMCP Server's MAS client
+   - Different service accounts for different platform services (e.g., payment gateway integration, analytics service)
+
+3. **Monitor Service Account Usage**:
+   - Log all Developer Console API calls for audit
+   - Alert on abnormal usage patterns
+   - Regularly review access logs for security incidents
+
+**Error Response (Mini-App Accessing Developer Console Endpoint):**
+
+```json
+{
+  "error": "forbidden_platform_endpoint",
+  "error_description": "This endpoint is only accessible by platform services. Mini-apps do not have required privileges."
+}
+```
+
+### 4.10 TEP Token Structure
 
 TEP tokens are JSON Web Tokens (JWT) as defined in RFC 7519 [RFC7519], issued by the TMCP Server (acting as OAuth 2.0 authorization server for TMCP-specific operations).
 
@@ -877,7 +1475,7 @@ TEP tokens are JSON Web Tokens (JWT) as defined in RFC 7519 [RFC7519], issued by
 | `delegated_from` | No | Session delegation source (e.g., "matrix_session") |
 | `matrix_session_ref` | No | Matrix session details (device_id, session_id) |
 
-### 4.5 Client-Side Token Management
+### 4.11 Client-Side Token Management
 
 #### 4.5.1 Secure Storage Requirements
 
@@ -925,7 +1523,7 @@ Clients MUST:
 3. Clear all in-memory tokens
 4. Clear any cached user data
 
-### 4.6 TMCP Server Authentication Middleware
+### 4.12 TMCP Server Authentication Middleware
 
 **Token Validation Requirements**:
 
@@ -965,7 +1563,7 @@ When TMCP Server proxies requests to Matrix homeserver on behalf of authenticate
 | Missing required scope | 403 | "Missing required scope" |
 | Failed Matrix token refresh | 401 | "Failed to refresh Matrix token" |
 
-### 4.7 MAS Integration Requirements
+### 4.13 MAS Integration Requirements
 
 #### 4.7.1 MAS Client Registration
 
@@ -979,16 +1577,43 @@ The TMCP Server MUST be registered as a confidential client in MAS with the foll
 
 #### 4.7.2 Mini-App Client Registration
 
-Each mini-app MUST be registered in MAS with the following capabilities:
+Each mini-app MUST be registered in MAS with following capabilities:
+
+**For Public Clients:**
 
 | Parameter | Required | Description |
 |-----------|-----------|-------------|
-| `client_auth_method` | Yes | MUST be `client_secret_post` |
+| `client_auth_method` | Yes | `none` |
 | `redirect_uris` | Yes | For Authorization Code Grant |
 | `grant_types` | Yes | MUST include: `authorization_code`, `urn:ietf:params:oauth:grant-type:device_code`, `urn:ietf:params:oauth:grant-type:token-exchange`, `refresh_token` |
 | `scope` | Yes | MUST include: `urn:matrix:org.matrix.msc2967.client:api:*` |
 
-### 4.8 Token Refresh Flow
+**For Confidential Clients:**
+
+| Parameter | Required | Description |
+|-----------|-----------|-------------|
+| `client_auth_method` | Yes | `client_secret_post` |
+| `redirect_uris` | Yes | For Authorization Code Grant (if applicable) |
+| `grant_types` | Yes | MUST include: `authorization_code`, `urn:ietf:params:oauth:grant-type:device_code`, `urn:ietf:params:oauth:grant-type:token-exchange`, `refresh_token` |
+| `scope` | Yes | MUST include: `urn:matrix:org.matrix.msc2967.client:api:*` |
+
+**For Hybrid Clients:**
+
+Hybrid clients register two separate clients with MAS:
+
+1. **Public Client (Frontend):**
+   - `client_id`: `ma_shop_001`
+   - `client_auth_method`: `none`
+   - Used for WebView authentication (PKCE, Matrix Session Delegation)
+
+2. **Confidential Client (Backend):**
+   - `client_id`: `ma_shop_001_backend`
+   - `client_auth_method`: `client_secret_post`
+   - Used for webhook processing and backend API calls
+
+Both clients share the same mini-app registration and scope permissions.
+
+### 4.14 Token Refresh Flow
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -1033,7 +1658,7 @@ Each mini-app MUST be registered in MAS with the following capabilities:
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.9 Security Considerations
+### 4.15 Security Considerations
 
 **Token Storage Security:**
 
@@ -1130,7 +1755,7 @@ token=<MATRIX_TOKEN>
 - Pre-approved scopes MUST be explicitly defined in mini-app manifest
 - Sensitive scopes ALWAYS require user consent
 
-### 4.10 Matrix Integration
+### 4.16 Matrix Integration
 
 TMCP Server proxies Matrix operations using the user's MAS credentials. Servers MUST:
 
@@ -1145,7 +1770,7 @@ TMCP Server proxies Matrix operations using the user's MAS credentials. Servers 
 
 The server MUST forward Matrix requests to the homeserver on behalf of authenticated users, preserving the user's MAS credentials and session context.
 
-### 4.11 In-Chat Payment Architecture
+### 4.17 In-Chat Payment Architecture
 
 TMCP implements in-chat payment notifications where payment events appear natively in Matrix rooms. This approach provides integrated payment events that appear as part of the conversation flow rather than external notifications.
 
@@ -3285,6 +3910,8 @@ Content-Type: application/json
 
 ### 9.1 Registration
 
+**Prerequisite:** Developers MUST authenticate and obtain a `DEVELOPER_TOKEN` before registering mini-apps. See Section 4.4 Developer Authentication for enrollment flow.
+
 #### 9.1.1 Registration Request
 
 ```http
@@ -3312,7 +3939,8 @@ Content-Type: application/json
     "scopes_requested": [
       "user:read",
       "wallet:pay"
-    ]
+    ],
+    "client_type": "public"
   },
   "branding": {
     "icon_url": "https://cdn.example.com/icon.png",
@@ -3328,12 +3956,190 @@ Content-Type: application/json
   "status": "pending_review",
   "credentials": {
     "client_id": "ma_shop_001",
+    "webhook_secret": "whsec_def456"
+  },
+  "created_at": "2025-12-18T14:30:00Z"
+}
+```
+
+**Response for Confidential Client:**
+```json
+{
+  "miniapp_id": "ma_shop_001",
+  "status": "pending_review",
+  "credentials": {
+    "client_id": "ma_shop_001",
     "client_secret": "secret_abc123",
     "webhook_secret": "whsec_def456"
   },
   "created_at": "2025-12-18T14:30:00Z"
 }
 ```
+
+**Response for Hybrid Client:**
+```json
+{
+  "miniapp_id": "ma_shop_001",
+  "status": "pending_review",
+  "credentials": {
+    "public_client": {
+      "client_id": "ma_shop_001",
+      "description": "Frontend WebView mini-app"
+    },
+    "confidential_client": {
+      "client_id": "ma_shop_001_backend",
+      "client_secret": "secret_xyz789",
+      "description": "Backend server for webhook processing and background operations"
+    },
+    "webhook_secret": "whsec_def456"
+  },
+  "created_at": "2025-12-18T14:30:00Z"
+}
+```
+
+**Client Type Parameter:**
+
+The `client_type` field in the registration request determines OAuth 2.0 authentication method:
+
+| Value | Description | OAuth Flows | Use Case |
+|-------|-------------|-------------|----------|
+| `public` | Client cannot securely store secrets (browser, mobile apps) | Matrix Session Delegation, Device Authorization Grant, Authorization Code with PKCE | Simple games, utilities, user-initiated apps |
+| `confidential` | Client can securely store secrets (backend servers) | Authorization Code with client_secret, Client Credentials Grant | Backend-only services, batch processing, multi-user apps |
+| `hybrid` | Mini-app with both frontend and backend components | Frontend: Public flows; Backend: Confidential flows | E-commerce, payments, apps requiring webhooks and background processing |
+
+For `public` clients:
+- No `client_secret` is issued
+- MUST use PKCE (Authorization Code Grant) or no secret (Matrix Session Delegation, Device Authorization Grant)
+- Authenticates via PKCE or Matrix token introspection only
+- Suitable for user-facing WebView applications
+
+For `confidential` clients:
+- `client_secret` is issued and MUST be securely stored
+- MUST use `client_secret_post` for authentication
+- Suitable for mini-apps with backend servers only (no frontend)
+
+For `hybrid` clients:
+- Two client credentials issued: one public (frontend), one confidential (backend)
+- Frontend uses public client authentication (PKCE, Matrix Session Delegation)
+- Backend uses confidential client authentication (client_secret_post)
+- Webhooks sent to backend using webhook_secret for signature verification
+- Shared mini-app ID and scope permissions across both clients
+- Recommended for e-commerce, payment processing, apps requiring webhook handling
+
+**Hybrid Client Registration Request:**
+```json
+{
+  "name": "E-Commerce Store",
+  "client_type": "hybrid",
+  "technical": {
+    "entry_url": "https://shop.example.com",
+    "redirect_uris": ["https://shop.example.com/oauth/callback"],
+    "webhook_url": "https://api.shop.example.com/webhooks/tmcp",
+    "scopes_requested": ["user:read", "wallet:pay"]
+  }
+}
+```
+
+#### 9.1.2 Webhook Delivery for Hybrid Clients
+
+Mini-apps registered as `hybrid` or `confidential` client types receive webhook notifications from TMCP Server.
+
+**Webhook Types:**
+
+| Event Type | Description | Payload Structure |
+|------------|-------------|-------------------|
+| `payment.completed` | Payment successfully processed | `{ payment_id, amount, currency, user_id, timestamp }` |
+| `payment.failed` | Payment processing failed | `{ payment_id, error_code, error_message }` |
+| `payment.refunded` | Payment refunded | `{ payment_id, refund_id, amount, currency }` |
+| `scope.revoked` | User revoked mini-app permissions | `{ user_id, revoked_scopes, timestamp }` |
+| `wallet.updated` | User wallet balance changed | `{ user_id, wallet_id, old_balance, new_balance }` |
+
+**Webhook Delivery Requirements:**
+
+TMCP Server MUST deliver webhooks to hybrid clients with the following security and reliability guarantees:
+
+1. **Signature Verification**:
+   - All webhooks MUST include `X-Webhook-Signature` header
+   - Signature computed as HMAC-SHA256 of payload using `webhook_secret`
+   - Format: `X-Webhook-Signature: sha256=<hex_digest>`
+
+2. **Reliable Delivery**:
+   - Webhooks MUST be delivered with at-least-once semantics
+   - Retry with exponential backoff on failure (5 attempts: 1s, 5s, 30s, 2min, 5min)
+   - Track delivery status and provide delivery logs in developer console
+
+3. **Idempotency**:
+   - All webhook payloads MUST include `event_id` field (UUID)
+   - Clients SHOULD implement idempotency handlers to prevent duplicate processing
+   - Recommended: store processed event IDs in database with unique constraint
+
+**Webhook Request Format:**
+
+```http
+POST /webhooks/tmcp HTTP/1.1
+Host: api.shop.example.com
+Content-Type: application/json
+X-Webhook-Signature: sha256=a5b9c3d8e7f2a1b4c6d8e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1
+X-Webhook-Event-Id: evt_abc123def456
+X-Webhook-Timestamp: 1735689600
+
+{
+  "event": "payment.completed",
+  "event_id": "evt_abc123def456",
+  "timestamp": "2025-12-31T10:00:00Z",
+  "data": {
+    "payment_id": "pay_xyz789",
+    "transaction_id": "txn_abc123",
+    "amount": 15000,
+    "currency": "USD",
+    "user_id": "@alice:tween.example",
+    "miniapp_id": "ma_shop_001",
+    "metadata": {
+      "order_id": "order_456",
+      "description": "Product purchase"
+    }
+  }
+}
+```
+
+**Backend Client Authentication for Webhook Operations:**
+
+When backend servers need to query TMCP Server or perform operations in response to webhooks:
+
+```http
+GET /api/v1/payments/pay_xyz789 HTTP/1.1
+Host: tmcp.example.com
+Authorization: Basic base64(ma_shop_001_backend:secret_xyz789)
+Content-Type: application/json
+
+Response:
+{
+  "payment_id": "pay_xyz789",
+  "status": "completed",
+  "amount": 15000,
+  "currency": "USD"
+}
+```
+
+**Webhook Error Handling:**
+
+| HTTP Status | Meaning | TMCP Server Action |
+|-------------|----------|-------------------|
+| 200 OK | Webhook processed successfully | Stop retries |
+| 202 Accepted | Webhook accepted, processing async | Stop retries |
+| 400 Bad Request | Invalid payload format | Stop retries, notify developer |
+| 401 Unauthorized | Signature verification failed | Stop retries, security alert |
+| 429 Too Many Requests | Rate limit exceeded | Continue retries with backoff |
+| 500-599 | Server error | Continue retries with backoff |
+
+**Webhook Security Best Practices:**
+
+1. **Always verify signatures** before processing webhook payload
+2. **Use HTTPS** for webhook endpoints (TMCP Server rejects HTTP endpoints)
+3. **Implement idempotency** using `event_id` to prevent duplicate processing
+4. **Validate timestamps** to prevent replay attacks (reject events older than 5 minutes)
+5. **Return HTTP 2xx** only after successful processing to acknowledge receipt
+6. **Log all webhook events** for debugging and audit purposes
 
 ### 9.2 Lifecycle States
 
@@ -4793,10 +5599,30 @@ Each mini-app MUST be registered in MAS with:
 | Parameter | Required | Value/Description |
 |-----------|-----------|-------------------|
 | `client_id` | Yes | Unique identifier for mini-app |
-| `client_auth_method` | Yes | `client_secret_post` |
+| `client_auth_method` | Yes | For public clients: `none`; For confidential clients: `client_secret_post` |
 | `redirect_uris` | Yes | Array of valid callback URLs |
 | `grant_types` | Yes | MUST include: `authorization_code`, `device_code`, `refresh_token` |
 | `scope` | Yes | MUST include: `openid`, `urn:matrix:org.matrix.msc2967.client:api:*` |
+
+**Hybrid Client Registration:**
+
+For hybrid clients (mini-apps with both frontend and backend), register two clients:
+
+1. **Public Client (Frontend):**
+   - `client_id`: `ma_shop_001`
+   - `client_auth_method`: `none`
+   - `redirect_uris`: WebView callback URLs
+   - `grant_types`: `authorization_code`, `device_code`, `refresh_token`
+   - `scope`: `openid`, `urn:matrix:org.matrix.msc2967.client:api:*`
+
+2. **Confidential Client (Backend):**
+   - `client_id`: `ma_shop_001_backend`
+   - `client_auth_method`: `client_secret_post`
+   - `redirect_uris`: Optional (for backend OAuth flows)
+   - `grant_types`: `authorization_code`, `refresh_token`, `client_credentials`
+   - `scope`: `openid`, `urn:matrix:org.matrix.msc2967.client:api:*`, webhook scopes
+
+Both clients MUST have matching scope permissions to ensure consistent authorization levels across frontend and backend.
 
 **Token Flow:**
 
@@ -5110,5 +5936,7 @@ def verify_webhook(payload, signature, secret):
     ).hexdigest()
     return hmac.compare_digest(f"sha256={expected}", signature)
 ```
+
+---
 
 **End of TMCP-001**
