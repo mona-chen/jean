@@ -1,4 +1,4 @@
-class MasClientService
+   class MasClientService
   ALLOWED_ALGORITHMS = %w[RS256 RS384 RS512].freeze
 
   class MasError < StandardError; end
@@ -200,8 +200,6 @@ wallet_id = user_id ? "tw_#{user_id.gsub(/[@:]/, '_')}" : "tw_unknown"
       created_at: Time.current.to_i
     }, expires_in: 30.days)
 
-    matrix_token_response = refresh_access_token_for_matrix(matrix_access_token)
-
     {
       access_token: "tep.#{tep_token}",
       token_type: "Bearer",
@@ -210,8 +208,8 @@ wallet_id = user_id ? "tw_#{user_id.gsub(/[@:]/, '_')}" : "tw_unknown"
       scope: scopes.join(" "),
       user_id: user_id,
       wallet_id: wallet_id,
-      matrix_access_token: matrix_token_response[:access_token],
-      matrix_expires_in: matrix_token_response[:expires_in],
+      matrix_access_token: matrix_access_token,
+      matrix_expires_in: 300,
       delegated_session: true
     }
   end
@@ -309,4 +307,4 @@ wallet_id = user_id ? "tw_#{user_id.gsub(/[@:]/, '_')}" : "tw_unknown"
       can_add_reactions: true
     }
   end
-end
+   end
