@@ -87,7 +87,7 @@ group :development, :test do
   gem "webmock"
 
   # Minitest version compatible with Rails 8.1.1
-  gem "minitest", "~> 5.24.0"
+  gem "minitest", "~> 6.0.1"
 end
 
 group :development do
