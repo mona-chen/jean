@@ -55,11 +55,13 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://tmcp:tmcp_password@db:5432/tmcp_development}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:-development_secret_key_base_for_testing_only}
+TMCP_PRIVATE_KEY: ${TMCP_PRIVATE_KEY:-development_jwt_signing_key_for_testing_only}
       BUNDLE_PATH: ${BUNDLE_PATH:-/usr/local/bundle}
       
       # TMCP Configuration
       TMCP_JWT_ISSUER: http://localhost:3000
       TMCP_JWT_KEY_ID: tmcp-dev-2025-01
+      TMCP_PRIVATE_KEY: ${TMCP_PRIVATE_KEY:-development_jwt_signing_key_for_testing_only}
       
       # Matrix Integration
       MATRIX_API_URL: ${MATRIX_API_URL:-https://core.tween.im}
@@ -67,8 +69,8 @@ services:
       
       # MAS Configuration (pointing to local dev MAS)
       MAS_URL: http://docker:8080
-      MAS_CLIENT_ID: GARMJ92HAZ0EBKRSASCWAAGXSA
-      MAS_CLIENT_SECRET_FILE: /run/secrets/mas_client_secret
+      MAS_CLIENT_ID: tmcp-server
+      MAS_CLIENT_SECRET: pF/Y9eiJXTHASLFNPOIzXiym0E9o1J7o5+UsHONumS0=
       MAS_TOKEN_URL: http://docker:8080/oauth2/token
       MAS_INTROSPECTION_URL: http://docker:8080/oauth2/introspect
       MAS_REVOCATION_URL: http://docker:8080/oauth2/revoke
@@ -76,14 +78,12 @@ services:
       # Security
       FORCE_SSL: false
       ALLOWED_ORIGINS: http://localhost:3000
-    volumes:
+     volumes:
       - bundle:/usr/local/bundle
       - ./secrets/tmcp_private_key.txt:/run/secrets/tmcp_private_key:ro
-      - ./secrets/mas_client_secret.txt:/run/secrets/mas_client_secret:ro
       - .:/config/workspace/jean
     secrets:
       - tmcp_private_key
-      - mas_client_secret
     depends_on:
       db:
         condition: service_healthy
