@@ -284,15 +284,8 @@ class Api::V1::OauthController < ApplicationController
         u.matrix_user_id = matrix_user_id
 
         if mas_username && !mas_username.empty?
-          if mas_username.include?("@")
-            username_homeserver = mas_username.split("@").last
-            localpart, domain = username_homeserver.split(":")
-            u.matrix_username = localpart
-            u.matrix_homeserver = domain
-          else
-            u.matrix_username = mas_username
-            u.matrix_homeserver = "tween.im"
-          end
+          u.matrix_username = "#{mas_username}:tween.im"
+          u.matrix_homeserver = "tween.im"
         else
           u.matrix_username = matrix_user_id
           u.matrix_homeserver = "tween.im"
@@ -397,15 +390,8 @@ class Api::V1::OauthController < ApplicationController
         u.matrix_user_id = matrix_user_id
 
         if mas_username && !mas_username.empty?
-          if mas_username.include?("@")
-            username_homeserver = mas_username.split("@").last
-            localpart, domain = username_homeserver.split(":")
-            u.matrix_username = localpart
-            u.matrix_homeserver = domain
-          else
-            u.matrix_username = mas_username
-            u.matrix_homeserver = "tween.im"
-          end
+          u.matrix_username = "#{mas_username}:tween.im"
+          u.matrix_homeserver = "tween.im"
         else
           u.matrix_username = matrix_user_id
           u.matrix_homeserver = "tween.im"

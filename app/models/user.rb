@@ -18,7 +18,7 @@ class User < ApplicationRecord
   # Validations
   validates :matrix_user_id, presence: true, uniqueness: true
   validates :mas_user_id, uniqueness: true, allow_nil: true
-  validates :matrix_username, presence: true
+  validates :matrix_username, presence: true, format: { with: /.+:.+\..+/, message: "must be in format username:homeserver" }
   validates :matrix_homeserver, presence: true
 
   # TMCP Protocol: Generate wallet_id if not present
