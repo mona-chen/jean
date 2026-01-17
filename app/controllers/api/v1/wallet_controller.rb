@@ -7,7 +7,7 @@ class Api::V1::WalletController < ApplicationController
 
   # GET /wallet/v1/balance - TMCP Protocol Section 6.2.1
   def balance
-    balance_data = WalletService.get_balance(@current_user.matrix_user_id)
+    balance_data = WalletService.get_balance(@current_user.matrix_user_id, @tep_token)
     render json: balance_data
   end
 
@@ -16,7 +16,7 @@ class Api::V1::WalletController < ApplicationController
     limit = (params[:limit] || 50).to_i.clamp(1, 100)
     offset = (params[:offset] || 0).to_i
 
-    transactions_data = WalletService.get_transactions(@current_user.matrix_user_id, limit: limit, offset: offset)
+    transactions_data = WalletService.get_transactions(@current_user.matrix_user_id, limit: limit, offset: offset, tep_token: @tep_token)
     render json: transactions_data
   end
 
@@ -28,13 +28,10 @@ class Api::V1::WalletController < ApplicationController
 
   # GET /wallet/v1/resolve/:user_id - TMCP Protocol Section 6.3.2
   def resolve
-    target_user_id = params[:user_id]
-
-    # Check room membership for privacy (TMCP Protocol Section 6.3.7)
-    room_id = params[:room_id]
-    if room_id && !user_in_room?(@current_user.matrix_user_id, target_user_id, room_id)
-      return render json: { error: { code: "FORBIDDEN", message: "Users do not share a room" } }, status: :forbidden
-    end
+    target_user_id = params[:id]
+    resolution_result = WalletService.resolve_user(target_user_id, tep_token: @tep_token)
+    render json: resolution_result
+  end
 
     resolution_result = WalletService.resolve_user(target_user_id)
 
@@ -224,10 +221,10 @@ class Api::V1::WalletController < ApplicationController
       return render json: { error: "missing_token", message: "TEP token required" }, status: :unauthorized
     end
 
-    token = auth_header.sub("Bearer ", "")
+    @tep_token = auth_header.sub("Bearer ", "")
 
     begin
-      payload = TepTokenService.decode(token)
+      payload = TepTokenService.decode(@tep_token)
       user_id = payload["sub"]
 
       @current_user = User.find_by(matrix_user_id: user_id)

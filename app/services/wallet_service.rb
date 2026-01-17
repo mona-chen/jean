@@ -70,16 +70,13 @@ class WalletService
     nil
   end
 
-  def self.get_balance(user_id)
+  def self.get_balance(user_id, tep_token = nil)
     @@circuit_breakers[:balance].call do
-      # Extract the internal user ID from the Matrix user ID
-      # user_id comes as "@mona:tween.im", we need to map to internal ID
-      internal_user_id = map_matrix_user_to_internal(user_id)
+      # Call real wallet service with TEP token authentication
+      headers = {}
+      headers["Authorization"] = "Bearer #{tep_token}" if tep_token.present?
 
-      # Call real wallet service
-      response = make_wallet_request(:get, "/api/v1/tmcp/wallets/balance",
-                                   nil,
-                                   { "X-TMCP-User-ID" => internal_user_id })
+      response = make_wallet_request(:get, "/api/v1/tmcp/wallets/balance", nil, headers)
 
       # Transform response to match PROTO.md format
       {
@@ -93,23 +90,27 @@ class WalletService
     end
   end
 
-  def self.get_transactions(user_id, limit: 50, offset: 0)
+  def self.get_transactions(user_id, limit: 50, offset: 0, tep_token: nil)
     @@circuit_breakers[:balance].call do
-      internal_user_id = map_matrix_user_to_internal(user_id)
-      return { transactions: [], pagination: { total: 0, limit: limit, offset: offset, has_more: false } } unless internal_user_id
+      headers = {}
+      headers["Authorization"] = "Bearer #{tep_token}" if tep_token.present?
 
       response = make_wallet_request(:get, "/api/v1/tmcp/wallet/transactions",
                                    { limit: limit, offset: offset },
-                                   { "X-TMCP-User-ID" => internal_user_id.to_s })
+                                   headers)
 
       # Transform response to match PROTO.md format if needed
       response
     end
   end
+  end
 
-  def self.resolve_user(user_id)
+  def self.resolve_user(user_id, tep_token: nil)
     @@circuit_breakers[:verification].call do
-      response = make_wallet_request(:get, "/api/v1/tmcp/users/resolve/#{CGI.escape(user_id)}")
+      headers = {}
+      headers["Authorization"] = "Bearer #{tep_token}" if tep_token.present?
+
+      response = make_wallet_request(:get, "/api/v1/tmcp/users/resolve/#{CGI.escape(user_id)}", nil, headers)
 
       # Transform to PROTO.md format if needed
       response
