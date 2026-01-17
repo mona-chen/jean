@@ -75,7 +75,7 @@ Rails.application.routes.draw do
         get "mini-apps/:miniapp_id/automated-review", to: "mini_app_registration#automated_review"
 
          # Room Member Wallet Status (TMCP Protocol Section 6.3.9)
-         get "wallet/room/:room_id/members", to: "wallet#room_member_wallets"
+         get "wallet/room/:room_id/members", to: "wallet#room_member_wallets", constraints: { room_id: /![^\/]+/ }
     end
   end
   use_doorkeeper
