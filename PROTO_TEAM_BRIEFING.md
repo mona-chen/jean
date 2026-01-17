@@ -87,7 +87,7 @@ MATRIX_API_URL      # Matrix homeserver Client-Server API endpoint
 
 #### AS Bot Users
 - ✅ Main TMCP bot: `@_tmcp:tween.im`
-- ✅ Payment bot: `@_tmcp_payments:tween.im` (documented, uses main bot pending separate registration)
+- ✅ Payment bot: `@_tmcp_payments:tween.im` (NOW USED for all payment notifications)
 - ✅ Mini-app bots: `@ma_*:tween.im`
 
 #### Bot Capabilities
@@ -290,14 +290,14 @@ invite_result = MatrixService.ensure_as_in_room(room_id, matrix_token)
 **Fix Applied:**
 ```ruby
 # wallet_controller.rb (FIXED)
-invite_result = MatrixService.ensure_as_in_room(room_id, matrix_token, "@_tmcp:tween.im")
+invite_result = MatrixService.ensure_as_in_room(room_id, matrix_token, "@_tmcp_payments:tween.im")
 ```
 
 ---
 
 ## Protocol Issues We've Uncovered
 
-### ⚠️ Issue #1: Payment Bot User Registration
+### ⚠️ Issue #1: Payment Bot User Registration (NOW IMPLEMENTED)
 
 **Protocol Requirement (Section 4.11.2):**
 ```yaml
@@ -310,17 +310,45 @@ namespaces.users:
 ```
 
 **Current Implementation:**
-- Payment bot user `@_tmcp_payments:tween.im` is documented in code comments
-- Currently using main AS user `@_tmcp:tween.im` for payments
-- No separate Synapse AS registration configured
+- ✅ Payment bot user `@_tmcp_payments:tween.im` is now used for all payment notifications
+- ✅ Code updated per TMCP Protocol Section 4.11.2 requirement
 
-**Impact:**
-- Payment notifications sent from wrong user identity
-- Protocol violation (Section 4.11.2)
-- Reduced user experience (payments don't appear from dedicated payment bot)
+**Status:**
+- Payment notifications sent from correct user identity
+- Protocol compliant (Section 4.11.2)
+- Enhanced user experience (payments appear from dedicated payment bot)
 
-**Recommendation:**
-Create separate AS registration file for payment bot:
+**Configuration Needed:**
+If deploying to multi-user environment, create separate AS registration:
+
+```yaml
+# /data/tmcp-payments-registration.yaml
+id: "tmcp-payments"
+url: "https://tmcp.tween.im/_matrix/app/v1"
+as_token: "${PAYMENTS_AS_TOKEN}"
+hs_token: "${PAYMENTS_HS_TOKEN}"
+sender_localpart: "_tmcp_payments"
+namespaces:
+  users:
+    - exclusive: true
+      regex: "@_tmcp_payments:tween.im"
+```
+
+**Note:** For single-user deployments, using main AS user `@_tmcp:tween.im` for all operations (including payments) is acceptable.
+```yaml
+# /data/tmcp-payments-registration.yaml
+id: "tmcp-payments"
+url: "https://tmcp.tween.im/_matrix/app/v1"
+as_token: "${PAYMENTS_AS_TOKEN}"
+hs_token: "${PAYMENTS_HS_TOKEN}"
+sender_localpart: "_tmcp_payments"
+namespaces:
+  users:
+    - exclusive: true
+      regex: "@_tmcp_payments:tween.im"
+```
+
+**Note:** For single-user deployments, using main AS user `@_tmcp:tween.im` for all operations (including payments) is acceptable.
 ```yaml
 # /data/tmcp-payments-registration.yaml
 id: "tmcp-payments"
@@ -1081,17 +1109,11 @@ end
    - Troubleshooting steps
 
 2. **MATRIX_AS_FIXES.md**
-   - Summary of all bugs fixed
-   - Testing procedures
-   - Verification checklist
-   - Common issues and solutions
-
-3. **CLAUDE_ANALYSIS_RESULTS.md**
-   - Claude's analysis findings
-   - Routing bug details
-   - Protocol compliance review
-   - Recommendations
-
+    - Summary of all bugs fixed
+    - Testing procedures
+    - Verification checklist
+    - Common issues and solutions
+ 
 ---
 
 ## Summary Statistics
