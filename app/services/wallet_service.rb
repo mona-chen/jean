@@ -88,70 +88,109 @@ class WalletService
 
   def self.get_balance(user_id, tep_token = nil)
     @@circuit_breakers[:balance].call do
-      # For now, return a consistent default wallet response
-      # This ensures the API always works while wallet service integration is being resolved
-      Rails.logger.info "Returning default wallet balance for user #{user_id}"
+      Rails.logger.info "Getting balance for user #{user_id}"
 
-      # Generate a consistent wallet ID for this user
-      wallet_id = "tw_#{user_id.hash.abs.to_s(36)}"
+      # Call tween-pay TMCP balance endpoint
+      response = make_wallet_request(:get, "/api/v1/tmcp/wallets/balance",
+                                   nil, {"Authorization" => "Bearer #{tep_token}"})
 
-      {
-        wallet_id: wallet_id,
-        user_id: user_id,
-        balance: {
-          available: 0.00,
-          pending: 0.00,
-          currency: "USD"
-        },
-        limits: {
-          daily_limit: 100000.00,
-          daily_used: 0.00,
-          transaction_limit: 50000.00
-        },
-        verification: {
-          level: 0,
-          level_name: "Unverified",
-          features: [],
-          can_upgrade: true,
-          next_level: 1,
-          upgrade_requirements: [ "id_verification" ]
-        },
-        status: "active"
-      }
+      if response.success?
+        data = JSON.parse(response.body).symbolize_keys
+
+        # Transform response to match jean's expected format
+        {
+          wallet_id: data[:wallet_id],
+          balance: {
+            available: data.dig(:balance, :available) || 0.00,
+            pending: data.dig(:balance, :pending) || 0.00,
+            currency: data.dig(:balance, :currency) || "USD"
+          },
+          limits: data[:limits] || {
+            daily_limit: 1000.00,
+            daily_used: 0.00,
+            transaction_limit: 500.00
+          },
+          verification: data[:verification] || {
+            level: 0,
+            level_name: "Unverified",
+            features: [],
+            can_upgrade: true,
+            next_level: 1,
+            upgrade_requirements: ["id_verification"]
+          },
+          status: data[:status] || "active"
+        }
+      else
+        Rails.logger.error "Wallet balance API error: #{response.status} - #{response.body}"
+        raise WalletError.new("Failed to get balance from wallet service")
+      end
     end
+  end
   end
 
   def self.get_transactions(user_id, limit: 50, offset: 0, tep_token: nil)
-     @@circuit_breakers[:balance].call do
-       Rails.logger.info "Returning empty transaction list for user #{user_id}"
-       {
-         transactions: [],
-         pagination: {
-           total: 0,
-           limit: limit,
-           offset: offset,
-           has_more: false
-         }
-       }
-     end
-   end
+    @@circuit_breakers[:balance].call do
+      Rails.logger.info "Getting transactions for user #{user_id}"
+
+      # Call tween-pay TMCP transactions endpoint
+      response = make_wallet_request(:get, "/api/v1/tmcp/wallet/transactions?limit=#{limit}&offset=#{offset}",
+                                   nil, {"Authorization" => "Bearer #{tep_token}"})
+
+      if response.success?
+        data = JSON.parse(response.body).symbolize_keys
+
+        # Transform response to match jean's expected format
+        {
+          transactions: data[:transactions] || [],
+          pagination: data[:pagination] || {
+            total: 0,
+            limit: limit,
+            offset: offset,
+            has_more: false
+          }
+        }
+      else
+        Rails.logger.error "Wallet transactions API error: #{response.status} - #{response.body}"
+        raise WalletError.new("Failed to get transactions from wallet service")
+      end
+    end
+  end
 
   def self.resolve_user(user_id, tep_token: nil)
     @@circuit_breakers[:verification].call do
-      # For user resolution, assume all users can have wallets created
-      Rails.logger.info "Resolving user #{user_id} - assuming wallet can be created"
+      Rails.logger.info "Resolving user #{user_id}"
 
-      wallet_id = "tw_#{user_id.hash.abs.to_s(36)}"
-      {
-        user_id: user_id,
-        wallet_id: wallet_id,
-        wallet_status: "active",
-        display_name: user_id.split(":").first.sub("@", ""),
-        avatar_url: nil,
-        payment_enabled: true,
-        created_at: Time.current.iso8601
-      }
+      # Call tween-pay TMCP user resolution endpoint
+      response = make_wallet_request(:get, "/api/v1/tmcp/users/resolve/#{user_id}",
+                                   nil, {"Authorization" => "Bearer #{tep_token}"})
+
+      if response.success?
+        data = JSON.parse(response.body).symbolize_keys
+
+        # Transform response to match jean's expected format
+        {
+          user_id: data[:user_id] || user_id,
+          has_wallet: data[:has_wallet] || true,
+          wallet_id: data[:wallet_id],
+          verification_level: data[:verification_level] || 0,
+          verification_name: data[:verification_name] || "None",
+          can_invite: data[:can_invite] || false
+        }
+      else
+        Rails.logger.error "User resolution API error: #{response.status} - #{response.body}"
+
+        # Return default response for non-existent users (allows wallet creation)
+        {
+          user_id: user_id,
+          has_wallet: false,
+          wallet_id: nil,
+          verification_level: 0,
+          verification_name: "None",
+          can_invite: true
+        }
+      end
     end
+  end
   end
 
   def self.initiate_p2p_transfer(sender_wallet, recipient_wallet, amount, currency, options = {})

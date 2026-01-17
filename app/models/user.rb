@@ -22,11 +22,14 @@ class User < ApplicationRecord
   validates :matrix_homeserver, presence: true
 
   # TMCP Protocol: Generate wallet_id if not present
-  before_create :generate_wallet_id
+  after_create :generate_wallet_id
 
   private
 
   def generate_wallet_id
-    self.wallet_id ||= "tw_#{SecureRandom.alphanumeric(12)}"
+    # Match tween-pay format: tw_#{user.id} where id is database primary key
+    if wallet_id.blank?
+      update_column(:wallet_id, "tw_#{id}")
+    end
   end
 end
