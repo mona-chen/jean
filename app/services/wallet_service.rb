@@ -114,7 +114,7 @@ class WalletService
           features: [],
           can_upgrade: true,
           next_level: 1,
-          upgrade_requirements: ["id_verification"]
+          upgrade_requirements: [ "id_verification" ]
         },
         status: "active"
       }
@@ -122,20 +122,19 @@ class WalletService
   end
 
   def self.get_transactions(user_id, limit: 50, offset: 0, tep_token: nil)
-    @@circuit_breakers[:balance].call do
-      Rails.logger.info "Returning empty transaction list for user #{user_id}"
-      {
-        transactions: [],
-        pagination: {
-          total: 0,
-          limit: limit,
-          offset: offset,
-          has_more: false
-        }
-      }
-    end
-  end
-  end
+     @@circuit_breakers[:balance].call do
+       Rails.logger.info "Returning empty transaction list for user #{user_id}"
+       {
+         transactions: [],
+         pagination: {
+           total: 0,
+           limit: limit,
+           offset: offset,
+           has_more: false
+         }
+       }
+     end
+   end
 
   def self.resolve_user(user_id, tep_token: nil)
     @@circuit_breakers[:verification].call do
@@ -147,7 +146,7 @@ class WalletService
         user_id: user_id,
         wallet_id: wallet_id,
         wallet_status: "active",
-        display_name: user_id.split(':').first.sub('@', ''),
+        display_name: user_id.split(":").first.sub("@", ""),
         avatar_url: nil,
         payment_enabled: true,
         created_at: Time.current.iso8601
