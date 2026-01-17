@@ -92,7 +92,7 @@ class WalletService
 
       # Call tween-pay TMCP balance endpoint
       response = make_wallet_request(:get, "/api/v1/tmcp/wallets/balance",
-                                   nil, {"Authorization" => "Bearer #{tep_token}"})
+                                   nil, { "Authorization" => "Bearer #{tep_token}" })
 
       if response.success?
         data = JSON.parse(response.body).symbolize_keys
@@ -116,7 +116,7 @@ class WalletService
             features: [],
             can_upgrade: true,
             next_level: 1,
-            upgrade_requirements: ["id_verification"]
+            upgrade_requirements: [ "id_verification" ]
           },
           status: data[:status] || "active"
         }
@@ -126,7 +126,6 @@ class WalletService
       end
     end
   end
-  end
 
   def self.get_transactions(user_id, limit: 50, offset: 0, tep_token: nil)
     @@circuit_breakers[:balance].call do
@@ -134,7 +133,7 @@ class WalletService
 
       # Call tween-pay TMCP transactions endpoint
       response = make_wallet_request(:get, "/api/v1/tmcp/wallet/transactions?limit=#{limit}&offset=#{offset}",
-                                   nil, {"Authorization" => "Bearer #{tep_token}"})
+                                   nil, { "Authorization" => "Bearer #{tep_token}" })
 
       if response.success?
         data = JSON.parse(response.body).symbolize_keys
@@ -162,7 +161,7 @@ class WalletService
 
       # Call tween-pay TMCP user resolution endpoint
       response = make_wallet_request(:get, "/api/v1/tmcp/users/resolve/#{user_id}",
-                                   nil, {"Authorization" => "Bearer #{tep_token}"})
+                                   nil, { "Authorization" => "Bearer #{tep_token}" })
 
       if response.success?
         data = JSON.parse(response.body).symbolize_keys
@@ -190,7 +189,6 @@ class WalletService
         }
       end
     end
-  end
   end
 
   def self.initiate_p2p_transfer(sender_wallet, recipient_wallet, amount, currency, options = {})
