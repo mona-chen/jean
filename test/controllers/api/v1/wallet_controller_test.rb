@@ -20,6 +20,7 @@ class Api::V1::WalletControllerTest < ActionDispatch::IntegrationTest
     )
     @headers = { "Authorization" => "Bearer #{@token}" }
   end
+  end
 
   test "should return wallet balance" do
     # Section 6.2.1: Get Balance
@@ -196,7 +197,7 @@ class Api::V1::WalletControllerTest < ActionDispatch::IntegrationTest
     # This test documents expected behavior when room membership is properly implemented
     eve = User.create!(
       matrix_user_id: "@eve:tween.example",
-      matrix_username: "eve",
+      matrix_username: "eve:tween.example",
       matrix_homeserver: "tween.example"
     )
 
