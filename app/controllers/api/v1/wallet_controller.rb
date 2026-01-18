@@ -109,9 +109,9 @@ class Api::V1::WalletController < ApplicationController
       recipient_user_id: recipient.matrix_user_id,
       room_id: room_id,
       note: params[:note]
-        )
+    )
 
-    render json: result
+    render json: transfer_data
   end
 
   # POST /wallet/v1/p2p/:transfer_id/confirm - TMCP Protocol Section 7.2.4
@@ -174,10 +174,6 @@ class Api::V1::WalletController < ApplicationController
         }
       )
     end
-
-    render json: result
-  end
-  end
 
     render json: result
   end
