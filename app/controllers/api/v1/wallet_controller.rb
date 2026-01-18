@@ -60,11 +60,10 @@ class Api::V1::WalletController < ApplicationController
       resolved_count: resolved_count,
       total_count: total_count
     }
-  end
+    end
 
   # POST /wallet/v1/p2p/initiate - TMCP Protocol Section 7.2.1
   def initiate_p2p
-    # Validate required parameters
     required_params = %w[recipient amount currency idempotency_key]
     missing_params = required_params.select { |param| params[param].blank? }
 
@@ -72,30 +71,25 @@ class Api::V1::WalletController < ApplicationController
       return render json: { error: "invalid_request", message: "Missing required parameters: #{missing_params.join(', ')}" }, status: :bad_request
     end
 
-    # Validate scopes
     unless @token_scopes.include?("wallet:pay")
       return render json: { error: "insufficient_scope", message: "wallet:pay scope required" }, status: :forbidden
     end
 
-    # Validate idempotency key (TMCP Protocol Section 7.2.1)
     cache_key = "p2p_idempotent:#{@current_user.id}:#{params[:idempotency_key]}"
     if Rails.cache.read(cache_key)
       return render json: { error: "duplicate_request", message: "Duplicate request with same idempotency key" }, status: :conflict
     end
 
-    # Validate recipient
     recipient = User.find_by(matrix_user_id: params[:recipient])
     unless recipient
       return render json: { error: { code: "RECIPIENT_NO_WALLET", message: "Recipient does not have a wallet", recipient: params[:recipient], can_invite: true, invite_url: "tween://invite-wallet" } }, status: :not_found
     end
 
-    # Validate room membership
     room_id = params[:room_id]
     if room_id && !user_in_room?(@current_user.matrix_user_id, recipient.matrix_user_id, room_id)
       return render json: { error: "forbidden", message: "Users do not share a room" }, status: :forbidden
     end
 
-    # Ensure AS is invited to room for notifications (automatic)
     if room_id
       tep_payload = TepTokenService.decode(@tep_token)
       matrix_token = tep_payload["matrix_access_token"]
@@ -106,7 +100,6 @@ class Api::V1::WalletController < ApplicationController
       end
     end
 
-    # Create P2P transfer
     transfer_data = WalletService.initiate_p2p_transfer(
       @current_user.wallet_id,
       recipient.wallet_id,
@@ -114,24 +107,77 @@ class Api::V1::WalletController < ApplicationController
       params[:currency] || "USD",
       sender_user_id: @current_user.matrix_user_id,
       recipient_user_id: recipient.matrix_user_id,
-      room_id: room_id
+      room_id: room_id,
+      note: params[:note]
+        )
+
+    render json: result
+  end
+
+  # POST /wallet/v1/p2p/:transfer_id/confirm - TMCP Protocol Section 7.2.4
+  def confirm_p2p
+    unless @token_scopes.include?("wallet:pay")
+      return render json: { error: "insufficient_scope", message: "wallet:pay scope required" }, status: :forbidden
+    end
+
+    transfer_id = params[:transfer_id]
+
+    auth_proof = params[:auth_proof]
+    unless auth_proof
+      return render json: { error: "invalid_request", message: "auth_proof is required" }, status: :bad_request
+    end
+
+    idempotency_key = params[:idempotency_key]
+    cache_key = "p2p_confirm:#{@current_user.id}:#{transfer_id}"
+
+    if idempotency_key && Rails.cache.read(cache_key)
+      return render json: { error: "duplicate_request", message: "Duplicate confirm request" }, status: :conflict
+    end
+
+    result = WalletService.confirm_p2p_transfer(
+      transfer_id,
+      auth_proof,
+      @current_user.matrix_user_id
     )
 
-    # Cache idempotency key
-    Rails.cache.write(cache_key, transfer_data[:transfer_id], expires_in: 24.hours)
+    if result.key?(:error)
+      return render json: { error: result[:error] }, status: :unprocessable_entity
+    end
 
-    # Publish Matrix event (PROTO Section 7.2.2)
-    MatrixEventService.publish_p2p_transfer(transfer_data)
+    if idempotency_key
+      Rails.cache.write(cache_key, transfer_id, expires_in: 5.minutes)
+    end
 
-    render json: transfer_data.merge(
-      event_id: "$event_#{transfer_data[:transfer_id]}:tween.example"
-    )
+    tep_payload = TepTokenService.decode(@tep_token)
+    matrix_token = tep_payload["matrix_access_token"]
+
+    if matrix_token && result[:room_id]
+      MatrixEventService.publish_p2p_transfer(result)
+    end
+
+    render json: result
   end
 
   # POST /wallet/v1/p2p/:transfer_id/accept - TMCP Protocol Section 7.2.3
   def accept_p2p
     transfer_id = params[:transfer_id]
-    result = WalletService.accept_p2p_transfer(transfer_id, @current_user.wallet_id)
+    result = WalletService.accept_p2p_transfer(transfer_id, @current_user.matrix_user_id)
+
+    if result[:status] == "completed"
+      MatrixEventService.publish_p2p_status_update(
+        transfer_id,
+        "completed",
+        {
+          user_id: @current_user.matrix_user_id,
+          accepted_at: result[:accepted_at],
+          accepted_by: "recipient"
+        }
+      )
+    end
+
+    render json: result
+  end
+  end
 
     render json: result
   end
@@ -139,7 +185,7 @@ class Api::V1::WalletController < ApplicationController
   # POST /wallet/v1/p2p/:transfer_id/reject - TMCP Protocol Section 7.2.3
   def reject_p2p
     transfer_id = params[:transfer_id]
-    result = WalletService.reject_p2p_transfer(transfer_id)
+    result = WalletService.reject_p2p_transfer(transfer_id, @current_user.matrix_user_id)
 
     render json: result.merge(
       refund_initiated: true,

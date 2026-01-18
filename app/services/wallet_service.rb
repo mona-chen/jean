@@ -219,9 +219,25 @@ class WalletService
     end
   end
 
+  def self.confirm_p2p_transfer(transfer_id, auth_proof, user_id)
+    @@circuit_breakers[:transfers].call do
+      user_internal_id = map_matrix_user_to_internal(user_id)
+
+      request_body = {
+        auth_proof: auth_proof
+      }
+
+      response = make_wallet_request(:post, "/api/v1/tmcp/transfers/p2p/#{transfer_id}/confirm",
+                                   request_body,
+                                   { "X-TMCP-User-ID" => user_internal_id.to_s })
+
+      response
+    end
+  end
+
   def self.accept_p2p_transfer(transfer_id, recipient_wallet)
     @@circuit_breakers[:transfers].call do
-      recipient_internal_id = map_matrix_user_to_internal(recipient_wallet) # This needs to be fixed - we need recipient user ID
+      recipient_internal_id = map_matrix_user_to_internal(recipient_wallet)
 
       response = make_wallet_request(:post, "/api/v1/tmcp/transfers/p2p/#{transfer_id}/accept",
                                    nil,
@@ -231,10 +247,29 @@ class WalletService
     end
   end
 
-  def self.reject_p2p_transfer(transfer_id)
+  def self.reject_p2p_transfer(transfer_id, user_id = nil, reason = nil)
     @@circuit_breakers[:transfers].call do
-      # We need to get the user ID from somewhere - this might need refactoring
-      response = make_wallet_request(:post, "/api/v1/tmcp/transfers/p2p/#{transfer_id}/reject")
+      headers = {}
+      headers["X-TMCP-User-ID"] = map_matrix_user_to_internal(user_id).to_s if user_id
+
+      body = {}
+      body[:reason] = reason if reason
+
+      response = make_wallet_request(:post, "/api/v1/tmcp/transfers/p2p/#{transfer_id}/reject",
+                                   body,
+                                   headers)
+
+      response
+    end
+  end
+
+  def self.get_transfer_info(transfer_id)
+    @@circuit_breakers[:transfers].call do
+      internal_api_key = ENV.fetch("WALLET_INTERNAL_API_KEY", "")
+
+      response = make_wallet_request(:get, "/api/v1/internal/transfers/#{transfer_id}",
+                                   nil,
+                                   { "X-Internal-API-Key" => internal_api_key })
 
       response
     end

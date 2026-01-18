@@ -97,6 +97,10 @@ class MatrixEventService
     def publish_p2p_transfer(transfer_data)
       sender = transfer_data["sender"] || transfer_data[:sender]
       recipient = transfer_data["recipient"] || transfer_data[:recipient]
+      status = transfer_data["status"] || transfer_data[:status]
+      recipient_acceptance_required = ActiveModel::Type::Boolean.new.cast(
+        transfer_data["recipient_acceptance_required"] || transfer_data[:recipient_acceptance_required]
+      )
 
       event = {
         type: "m.tween.wallet.p2p",
@@ -109,22 +113,52 @@ class MatrixEventService
           note: transfer_data["note"] || transfer_data[:note],
           sender: { user_id: sender["user_id"] || sender[:user_id] },
           recipient: { user_id: recipient["user_id"] || recipient[:user_id] },
-          status: transfer_data["status"] || transfer_data[:status],
+          status: status,
+          recipient_acceptance_required: recipient_acceptance_required,
           timestamp: transfer_data["timestamp"] || transfer_data[:timestamp]
-        },
-        room_id: transfer_data["room_id"] || transfer_data[:room_id]
       }
+      
+      room_id = transfer_data["room_id"] || transfer_data[:room_id]
+      return unless room_id
 
       publish_event(event)
     end
 
     def publish_p2p_status_update(transfer_id, status, details = {})
+      visual_details = case status
+      when "completed"
+        {
+          icon: "✓",
+          color: "green",
+          status_text: "Accepted"
+        }
+      when "rejected"
+        {
+          icon: "✕",
+          color: "red",
+          status_text: "Declined"
+        }
+      when "expired"
+        {
+          icon: "⏰",
+          color: "gray",
+          status_text: "Expired"
+        }
+      else
+        {
+          icon: "⏳",
+          color: "yellow",
+          status_text: status
+        }
+      end
+
       event = {
         type: "m.tween.wallet.p2p.status",
         content: {
           transfer_id: transfer_id,
           status: status,
-          timestamp: Time.current.iso8601
+          timestamp: Time.current.iso8601,
+          visual: visual_details
         }.merge(details)
       }
 

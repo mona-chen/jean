@@ -10,7 +10,7 @@
 
 ## Abstract
 
-This document specifies the Tween Mini-App Communication Protocol (TMCP), a comprehensive protocol for secure communication between instant messaging applications and third-party mini-applications. Built as an isolated Application Service layer on the Matrix protocol, TMCP provides authentication, authorization, and wallet-based payment processing without modifying Matrix/Synapse core code. The protocol enables an integrated application platform with wallet services, instant peer-to-peer transfers, mini-app payments, and social commerce. TMCP operates within Matrix's federation framework but assumes deployment in controlled federation environments for enhanced security.
+This document specifies the Tween Mini-App Communication Protocol (TMCP), a comprehensive protocol for secure communication between instant messaging applications and third-party mini-applications. Built as an isolated Application Service layer on the Matrix protocol, TMCP provides authentication, authorization, and wallet-based payment processing without modifying Matrix/Synapse core code. The protocol enables an integrated application platform with wallet services, peer-to-peer transfers with sub-3s settlement time, mini-app payments, and social commerce. TMCP operates within Matrix's federation framework but assumes deployment in controlled federation environments for enhanced security.
 
 ---
 
@@ -2994,8 +2994,32 @@ EXPIRED   EXPIRED
 
 ### 7.2 Peer-to-Peer Transfer
 
-#### 7.2.1 Initiate Transfer
+#### 7.2.1 Authorization Methods and Fallbacks
+P2P transfers use flexible authorization methods with fallbacks, uniform with mini-app payments:
+- **Biometric**: Hardware-backed (fingerprint/face); requires Secure Enclave/TEE/WebAuthn.
+- **PIN**: Software-based hashed PIN.
+- **OTP/TOTP**: Software-based (SMS or authenticator app).
+- **Selection Logic**: Prioritize biometric > PIN > OTP. Client checks available methods; falls back if primary fails.
+- **Proof Types**: Signature for hardware; hashed/code for software.
 
+If no strong auth configured, wallet policy may require recipient acceptance or block transfers.
+
+#### 7.2.2 Pre-Authorization Check
+TMCP Server queries Wallet Service for auth requirements and recipient acceptance policy.
+
+**Wallet Service API** (internal):
+```json
+// Request: GET /internal/user/{user_id}/auth-policy?amount=5000&currency=USD
+// Response:
+{
+  "available_methods": ["biometric", "pin"],
+  "recommended_method": "biometric",
+  "recipient_acceptance_required": false,  // Per wallet policy
+  "auth_upgrade_required": false
+}
+```
+
+#### 7.2.3 Initiate Transfer
 ```http
 POST /wallet/v1/p2p/initiate HTTP/1.1
 Host: tmcp.example.com
@@ -3006,8 +3030,7 @@ Content-Type: application/json
   "recipient": "@bob:tween.example",
   "amount": 5000.00,
   "currency": "USD",
-  "note": "Lunch money",
-  "idempotency_key": "unique-uuid-here"
+  "idempotency_key": "unique-uuid"
 }
 ```
 
@@ -3020,7 +3043,52 @@ Content-Type: application/json
 ```json
 {
   "transfer_id": "p2p_abc123",
-  "status": "completed",
+  "status": "pending_authorization",
+  "available_methods": ["biometric", "pin", "otp"],
+  "recipient_acceptance_required": false,  // Per wallet policy
+  "amount": 5000.00,
+  "sender": {
+    "user_id": "@alice:tween.example"
+  },
+  "recipient": {
+    "user_id": "@bob:tween.example"
+  },
+  "timestamp": "2025-12-18T14:30:00Z"
+}
+```
+
+#### 7.2.4 Confirm Transfer
+```http
+POST /wallet/v1/p2p/{transfer_id}/confirm HTTP/1.1
+Host: tmcp.example.com
+Authorization: Bearer <TEP_TOKEN>
+Content-Type: application/json
+
+{
+  "auth_proof": {
+    "method": "biometric",
+    "proof": {
+      // For biometric:
+      "signature": "base64_signature",  // SHA-256 hash over ${transfer_id}:${amount}:${currency}:${timestamp}
+      "device_id": "device_xyz789",
+      "timestamp": "2025-12-18T14:30:15Z"
+      // For PIN:
+      "hashed_pin": "sha256_hash",
+      "device_id": "device_xyz789"
+      // For OTP:
+      "otp_code": "123456",
+      "timestamp": "2025-12-18T14:30:15Z"
+    }
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "transfer_id": "p2p_abc123",
+  "status": "completed",  // Or "pending_recipient_acceptance"
+  "recipient_acceptance_required": false,
   "amount": 5000.00,
   "sender": {
     "user_id": "@alice:tween.example",
@@ -3035,9 +3103,8 @@ Content-Type: application/json
 }
 ```
 
-#### 7.2.2 Matrix Event for P2P Transfer
-
-The TMCP Server MUST create a Matrix event documenting the transfer:
+#### 7.2.8 Matrix Event for P2P Transfer
+TMCP Server creates a Matrix event documenting the transfer after confirmation:
 
 ```json
 {
@@ -3055,7 +3122,8 @@ The TMCP Server MUST create a Matrix event documenting the transfer:
     "recipient": {
       "user_id": "@bob:tween.example"
     },
-    "status": "completed",
+    "status": "completed",  // Or "pending_recipient_acceptance"
+    "recipient_acceptance_required": false,
     "timestamp": "2025-12-18T14:30:00Z"
   },
   "room_id": "!chat:tween.example",
@@ -3063,24 +3131,25 @@ The TMCP Server MUST create a Matrix event documenting the transfer:
 }
 ```
 
-#### 7.2.3 Recipient Acceptance Protocol
+#### 7.2.7 Recipient Acceptance Protocol (Conditional)
+Recipient acceptance is optional per wallet policy. If `recipient_acceptance_required: true`, follow the acceptance flow for enhanced security.
 
-For enhanced security and user control, P2P transfers require explicit recipient acceptance before funds are released. This two-step confirmation pattern prevents accidental transfers and gives recipients control over incoming payments.
-
-**Acceptance Flow:**
-
+**Conditional Acceptance Flow:**
 ```
-INITIATED → PENDING_RECIPIENT_ACCEPTANCE → COMPLETED
-    ↓              ↓
-CANCELLED    EXPIRED (24h)
-    ↓              ↓
-REJECTED ←─────────┘
+INITIATED → PENDING_AUTHORIZATION → AUTHORIZED → COMPLETED (if no acceptance required)
+     ↓                              ↓              ↓
+CANCELLED                   AUTH_FAILED    PENDING_RECIPIENT_ACCEPTANCE → COMPLETED (accepted) | EXPIRED (24h, refunded)
+     ↓                              ↓              ↓
+REJECTED ←─────────────────────────┘              ↓
+                                                 EXPIRED (24h)
+                                                 ↓
+                                                 REJECTED
 ```
 
-**Acceptance Window:** 24 hours (RECOMMENDED)
-**Auto-Expiry:** Transfers not accepted within window are auto-cancelled and refunded
+**Acceptance Window:** 24 hours (when required)
+**Auto-Expiry:** Only applies when acceptance is required; transfers auto-expire and refund if not accepted.
 
-**Accept Transfer:**
+**Accept Transfer:** (Only if `recipient_acceptance_required: true`)
 
 ```http
 POST /wallet/v1/p2p/{transfer_id}/accept HTTP/1.1
@@ -3109,7 +3178,7 @@ Content-Type: application/json
 }
 ```
 
-**Reject Transfer:**
+**Reject Transfer:** (Only if required)
 
 ```http
 POST /wallet/v1/p2p/{transfer_id}/reject HTTP/1.1
@@ -3134,40 +3203,8 @@ Content-Type: application/json
 }
 ```
 
-**Auto-Expiry Processing:**
-
-TMCP Server MUST run scheduled jobs to process expired transfers. The processing MUST:
-
-1. **Query Expired Transfers**: Find all transfers with status `pending_recipient_acceptance` where `created_at` is older than 24 hours
-2. **Refund Processing**: For each expired transfer, refund the full amount to the sender's wallet
-3. **Matrix Event Update**: Send a status update event to the original room indicating expiration and refund
-
-**Expired Transfer Status Event:**
-```json
-{
-  "type": "m.tween.wallet.p2p.status",
-  "content": {
-    "transfer_id": "p2p_abc123",
-    "status": "expired",
-    "expired_at": "2025-12-19T14:30:00Z",
-    "refunded": true
-  }
-}
-```
-
-**Expiry Processing Requirements:**
-
-| Step | Action | Result |
-|------|--------|--------|
-| 1 | Query pending transfers > 24h old | List of transfer_ids |
-| 2 | Initiate refund for each | Refund transaction created |
-| 3 | Update transfer status | Set to `expired` |
-| 4 | Send Matrix event | Room receives status update |
-
-**Error Handling:**
-- Failed refunds MUST be logged and queued for retry
-- Matrix event failures MUST NOT prevent refund processing
-- Server MUST retry expiry processing at least 3 times before marking as failed
+**Auto-Expiry Processing:** (Only for required acceptance)
+TMCP Server runs scheduled jobs for transfers where acceptance is required.
 
 **Updated Matrix Event for Pending Acceptance:**
 
@@ -3188,6 +3225,7 @@ TMCP Server MUST run scheduled jobs to process expired transfers. The processing
       "user_id": "@bob:tween.example"
     },
     "status": "pending_recipient_acceptance",
+    "recipient_acceptance_required": true,
     "expires_at": "2025-12-19T14:30:00Z",
     "actions": [
       {
@@ -4226,11 +4264,11 @@ Content-Type: multipart/form-data
 
 {
   "reason": "We have addressed the CSP issues and resubmit for review",
-  "changes_made": [
-    "Added strict CSP with nonce support",
-    "Removed inline event handlers",
-    "Updated privacy policy"
-  ],
+   "changes_made": [
+     "Implemented Content Security Policy with nonce support",
+     "Removed inline event handlers from HTML",
+     "Updated privacy policy to comply with requirements"
+   ],
   "evidence": [<FILES>]
 }
 ```
@@ -5842,9 +5880,9 @@ public boolean shouldOverrideUrlLoading(WebView view, String url) {
 
     // Whitelist allowed domains
     List<String> allowedDomains = Arrays.asList(
-        "wallet.tween.im",
-        "cdn.tween.im",
-        "tmcp.tween.im"
+        "miniapp.example.com",
+        "cdn.tween.example",
+        "tmcp.example.com"
     );
 
     String host = uri.getHost();

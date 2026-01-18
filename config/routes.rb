@@ -15,13 +15,14 @@ Rails.application.routes.draw do
       delete "storage/:key", to: "storage#destroy"
       post "storage/batch", to: "storage#batch"
 
-       # Wallet endpoints
-       get "wallet/balance", to: "wallet#balance"
-       get "wallet/transactions", to: "wallet#transactions"
-       get "wallet/verification", to: "wallet#verification"
-       post "wallet/p2p/initiate", to: "wallet#initiate_p2p"
-       post "wallet/p2p/:transfer_id/accept", to: "wallet#accept_p2p"
-       post "wallet/p2p/:transfer_id/reject", to: "wallet#reject_p2p"
+        # Wallet endpoints
+        get "wallet/balance", to: "wallet#balance"
+        get "wallet/transactions", to: "wallet#transactions"
+        get "wallet/verification", to: "wallet#verification"
+        post "wallet/p2p/initiate", to: "wallet#initiate_p2p"
+        post "wallet/p2p/:transfer_id/confirm", to: "wallet#confirm_p2p"
+        post "wallet/p2p/:transfer_id/accept", to: "wallet#accept_p2p"
+        post "wallet/p2p/:transfer_id/reject", to: "wallet#reject_p2p"
         get "wallet/resolve/:user_id", to: "wallet#resolve", constraints: { user_id: /@[^\/]+/ }
        post "wallet/resolve/batch", to: "wallet#resolve_batch"
 

@@ -181,6 +181,7 @@ OAuth 2.0 + PKCE authorization flow for mini-app authentication.
 GET  /api/v1/wallet/balance
 GET  /api/v1/wallet/transactions
 POST /api/v1/wallet/p2p/initiate
+POST /api/v1/wallet/p2p/:transfer_id/confirm
 POST /api/v1/wallet/p2p/:transfer_id/accept
 POST /api/v1/wallet/p2p/:transfer_id/reject
 GET  /api/v1/wallet/resolve/:user_id

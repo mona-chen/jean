@@ -160,6 +160,84 @@ class Api::V1::WalletControllerTest < ActionDispatch::IntegrationTest
     # The response structure may vary, just check we got success response
   end
 
+  test "should confirm P2P transfer with biometric auth" do
+    # Section 7.2.4: Confirm Transfer with Biometric Auth
+    transfer_id = "p2p_test123"
+    signature = Base64.strict_encode64("test_signature")
+    timestamp = Time.current.iso8601
+
+    auth_proof = {
+      method: "biometric",
+      proof: {
+        signature: signature,
+        device_id: "device_test_001",
+        timestamp: timestamp
+      }
+    }
+
+    post "/api/v1/wallet/p2p/#{transfer_id}/confirm",
+         params: { auth_proof: auth_proof },
+         headers: @headers
+
+    assert_response :success
+
+    response_body = JSON.parse(response.body)
+    assert_equal transfer_id, response_body["transfer_id"]
+    assert response_body.key?("status")
+    assert response_body["sender"].key?("user_id")
+    assert response_body["recipient"].key?("user_id")
+  end
+
+  test "should confirm P2P transfer with PIN auth" do
+    # Section 7.2.4: Confirm Transfer with PIN Auth
+    transfer_id = "p2p_test456"
+    hashed_pin = Digest::SHA256.hexdigest("1234")
+    timestamp = Time.current.iso8601
+
+    auth_proof = {
+      method: "pin",
+      proof: {
+        hashed_pin: hashed_pin,
+        device_id: "device_test_001",
+        timestamp: timestamp
+      }
+    }
+
+    post "/api/v1/wallet/p2p/#{transfer_id}/confirm",
+         params: { auth_proof: auth_proof },
+         headers: @headers
+
+    assert_response :success
+
+    response_body = JSON.parse(response.body)
+    assert_equal transfer_id, response_body["transfer_id"]
+    assert response_body.key?("status")
+  end
+
+  test "should confirm P2P transfer with OTP auth" do
+    # Section 7.2.4: Confirm Transfer with OTP Auth
+    transfer_id = "p2p_test789"
+    timestamp = Time.current.iso8601
+
+    auth_proof = {
+      method: "otp",
+      proof: {
+        otp_code: "123456",
+        timestamp: timestamp
+      }
+    }
+
+    post "/api/v1/wallet/p2p/#{transfer_id}/confirm",
+         params: { auth_proof: auth_proof },
+         headers: @headers
+
+    assert_response :success
+
+    response_body = JSON.parse(response.body)
+    assert_equal transfer_id, response_body["transfer_id"]
+    assert response_body.key?("status")
+  end
+
   test "should reject P2P transfer" do
     # Section 7.2.3: Recipient Rejection
     transfer_id = "p2p_test123"
@@ -175,6 +253,19 @@ class Api::V1::WalletControllerTest < ActionDispatch::IntegrationTest
     assert_equal "rejected", response_body["status"]
     assert response_body.key?("rejected_at")
     assert response_body["refund_initiated"]
+  end
+
+  test "should require auth_proof for confirm" do
+    # Section 7.2.4: Auth Proof Required
+    transfer_id = "p2p_test_missing"
+
+    post "/api/v1/wallet/p2p/#{transfer_id}/confirm",
+         params: {},
+         headers: @headers
+
+    assert_response :bad_request
+
+    assert_includes response.body, "auth_proof is required"
   end
 
   test "should validate Matrix user ID format" do
