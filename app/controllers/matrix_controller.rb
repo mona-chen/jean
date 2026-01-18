@@ -24,30 +24,23 @@ class MatrixController < ApplicationController
 
   # GET /_matrix/app/v1/users/:user_id - Query user existence
   # Per Matrix spec: Returning 200 means user exists. AS MUST create user on homeserver.
+  # Note: Matrix spec does NOT mandate storing users locally. Only requirement is ensuring
+  # users exist on Matrix homeserver when returning 200.
   def user
     begin
       user_id = CGI.unescape(params[:user_id])
 
       Rails.logger.debug "MatrixController#user: params[:user_id]=#{params[:user_id].inspect}, unescaped=#{user_id.inspect}"
 
-      # Check if user exists in our system
-      user = User.find_by(matrix_user_id: user_id)
-
-      # Only check for TMCP bot if user doesn't exist in database
       # TMCP bot users are virtual users created on-demand by Matrix AS
+      # These users are managed entirely by Matrix homeserver - no local storage required
       is_tmcp_bot = user_id.start_with?("@_tmcp") || user_id.start_with?("@ma_")
 
-      if user
-        Rails.logger.debug "MatrixController#user: found user=#{user.inspect}, is_tmcp_bot=false"
-        render json: {}, status: :ok
-        return
-      end
-
       if is_tmcp_bot
-        Rails.logger.debug "MatrixController#user: user not found, is_tmcp_bot=true"
+        Rails.logger.debug "MatrixController#user: TMCP bot user detected, registering with Matrix homeserver"
 
         # CRITICAL: Per Matrix spec, returning 200 means user MUST exist on homeserver
-        # Register the user with Matrix homeserver via Client-Server API
+        # Always register TMCP bots with Matrix homeserver to ensure they exist
         register_result = MatrixService.register_as_user(user_id)
 
         if register_result[:success]
@@ -60,8 +53,16 @@ class MatrixController < ApplicationController
         return
       end
 
-      Rails.logger.debug "MatrixController#user: user not found, is_tmcp_bot=false"
-      render json: {}, status: :not_found
+      # For non-TMCP users, check if they exist in our system
+      user = User.find_by(matrix_user_id: user_id)
+
+      if user
+        Rails.logger.debug "MatrixController#user: found user=#{user.inspect}"
+        render json: {}, status: :ok
+      else
+        Rails.logger.debug "MatrixController#user: user not found"
+        render json: {}, status: :not_found
+      end
     rescue => e
       Rails.logger.error "MatrixController#user error: #{e.message}"
       render json: {}, status: :not_found

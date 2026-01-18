@@ -260,12 +260,14 @@ class MatrixService
     homeserver_url = ENV["MATRIX_API_URL"] || "https://core.tween.im"
 
     # Register user using m.login.application_service
+    # Note: Some homeservers require inhibit_login: true for OAuth2-based servers
     response = mas_client.send(:http_client).post("#{homeserver_url}/_matrix/client/v3/register") do |req|
       req.headers["Authorization"] = "Bearer #{as_token}"
       req.headers["Content-Type"] = "application/json"
       req.body = {
         type: "m.login.application_service",
-        username: localpart
+        username: localpart,
+        inhibit_login: true
       }.to_json
     end
 
@@ -273,7 +275,7 @@ class MatrixService
       Rails.logger.info "Successfully registered AS user #{user_id}"
       { success: true, user_id: user_id }
     elsif response.status == 400
-      # Check if user already exists
+      # Check if user already exists or has other specific errors
       error_data = JSON.parse(response.body) rescue {}
       if error_data["errcode"] == "M_USER_IN_USE"
         Rails.logger.info "AS user #{user_id} already exists, treating as success"
