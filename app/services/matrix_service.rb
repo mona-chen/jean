@@ -271,21 +271,74 @@ class MatrixService
       }.to_json
     end
 
+    user_already_existed = false
+
     if response.success?
       Rails.logger.info "Successfully registered AS user #{user_id}"
-      { success: true, user_id: user_id }
     elsif response.status == 400
       # Check if user already exists or has other specific errors
       error_data = JSON.parse(response.body) rescue {}
       if error_data["errcode"] == "M_USER_IN_USE"
         Rails.logger.info "AS user #{user_id} already exists, treating as success"
-        { success: true, user_id: user_id, already_exists: true }
+        user_already_existed = true
       else
         Rails.logger.error "Failed to register AS user #{user_id}: #{response.status} - #{response.body}"
-        { success: false, error: response.status, message: response.body }
+        return { success: false, error: response.status, message: response.body }
       end
     else
       Rails.logger.error "Failed to register AS user #{user_id}: #{response.status} - #{response.body}"
+      return { success: false, error: response.status, message: response.body }
+    end
+
+    # Set display name for TMCP bots
+    set_display_name_result = set_user_display_name(user_id)
+    unless set_display_name_result[:success]
+      # Non-fatal: log warning but don't fail registration
+      Rails.logger.warn "Failed to set display name for #{user_id}: #{set_display_name_result[:message]}"
+    end
+
+    { success: true, user_id: user_id, already_exists: user_already_existed }
+  end
+
+  def self.set_user_display_name(user_id)
+    # Set display name for a user using Matrix Client-Server API
+    # AS must masquerade as the user whose profile is being modified
+    as_token = ENV["MATRIX_AS_TOKEN"]
+    unless as_token
+      Rails.logger.error "MATRIX_AS_TOKEN not configured"
+      return { success: false, error: "auth_error", message: "MATRIX_AS_TOKEN not configured" }
+    end
+
+    # Map TMCP bot user IDs to display names
+    display_name_map = {
+      "@_tmcp:tween.im" => "Tween Bot",
+      "@_tmcp_payments:tween.im" => "TweenPay Bot"
+    }
+
+    display_name = display_name_map[user_id]
+    unless display_name
+      # No specific display name configured for this user
+      return { success: true, skipped: true, message: "No display name configured for this user" }
+    end
+
+    mas_client = MasClientService.new
+    homeserver_url = ENV["MATRIX_API_URL"] || "https://core.tween.im"
+
+    # Set display name using Matrix Client-Server API with AS masquerading
+    # PUT /_matrix/client/v3/profile/{userId}/displayname?user_id={userId}
+    response = mas_client.send(:http_client).put("#{homeserver_url}/_matrix/client/v3/profile/#{CGI.escape(user_id)}/displayname?user_id=#{CGI.escape(user_id)}") do |req|
+      req.headers["Authorization"] = "Bearer #{as_token}"
+      req.headers["Content-Type"] = "application/json"
+      req.body = {
+        displayname: display_name
+      }.to_json
+    end
+
+    if response.success?
+      Rails.logger.info "Successfully set display name '#{display_name}' for #{user_id}"
+      { success: true, user_id: user_id, display_name: display_name }
+    else
+      Rails.logger.error "Failed to set display name for #{user_id}: #{response.status} - #{response.body}"
       { success: false, error: response.status, message: response.body }
     end
   end
