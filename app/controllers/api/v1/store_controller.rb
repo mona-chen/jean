@@ -1,8 +1,8 @@
 class Api::V1::StoreController < ApplicationController
   # TMCP Protocol Section 16.6: Mini-App Store Protocol
 
-  before_action :authenticate_tep_token
-  before_action :validate_store_access, only: [ :apps, :install, :uninstall ]
+  before_action :authenticate_tep_token, except: [ :categories, :apps ]
+  before_action :validate_store_access, only: [ :install, :uninstall ]
 
   # GET /api/v1/store/categories - TMCP Protocol Section 16.6.1
   def categories
@@ -73,7 +73,7 @@ class Api::V1::StoreController < ApplicationController
         icon_url: manifest["icon_url"] || "https://cdn.tween.example/icons/default.png",
         version: app.version,
         preinstalled: app.classification == "official" && manifest["preinstalled"],
-        installed: current_user_installed?(app.app_id),
+        installed: @current_user ? current_user_installed?(app.app_id) : false,
         developer: manifest["developer"] || {}
       }
     end
@@ -215,7 +215,11 @@ class Api::V1::StoreController < ApplicationController
   end
 
   def current_user_installed?(miniapp_id)
+    return false unless @current_user
+
     app = MiniApp.find_by(app_id: miniapp_id)
+    return false unless app
+
     MiniappInstallation.exists?(user: @current_user, mini_app: app)
   end
 end
