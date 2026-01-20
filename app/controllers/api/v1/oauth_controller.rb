@@ -276,23 +276,31 @@ class Api::V1::OauthController < ApplicationController
         return
       end
 
-       mas_username = introspection_response["username"]
-       device_id = introspection_response["device_id"]
+        mas_username = introspection_response["username"]
+        mas_internal_id = introspection_response["sub"]
+        device_id = introspection_response["device_id"]
 
-       user = User.find_or_create_by(mas_user_id: matrix_user_id) do |u|
-         u.mas_user_id = matrix_user_id
+        # Source of truth: Matrix user ID @username:tween.im
+        matrix_user_id = if mas_username && !mas_username.empty?
+                          "@#{mas_username}:tween.im"
+                        else
+                          # Fallback: use MAS internal ID as matrix_user_id if no username
+                          "@#{mas_internal_id}:tween.im"
+                        end
 
-         if mas_username && !mas_username.empty?
-           u.matrix_user_id = "@#{mas_username}:tween.im"
-           u.matrix_username = "#{mas_username}:tween.im"
-           u.matrix_homeserver = "tween.im"
-         else
-           # Fallback: use MAS internal ID as matrix_user_id if no username available
-           u.matrix_user_id = matrix_user_id
-           u.matrix_username = matrix_user_id
-           u.matrix_homeserver = "tween.im"
-         end
-       end
+        user = User.find_or_create_by(matrix_user_id: matrix_user_id) do |u|
+          u.mas_user_id = mas_internal_id
+          u.matrix_user_id = matrix_user_id
+
+          if mas_username && !mas_username.empty?
+            u.matrix_username = "#{mas_username}:tween.im"
+            u.matrix_homeserver = "tween.im"
+          else
+            # Fallback for internal ID
+            u.matrix_username = "#{mas_internal_id}:tween.im"
+            u.matrix_homeserver = "tween.im"
+          end
+        end
 
       authorization_result = authorize_scopes(user, application, scopes)
 
@@ -385,22 +393,30 @@ class Api::V1::OauthController < ApplicationController
         return
       end
 
-      mas_username = introspection_response["username"]
+       mas_username = introspection_response["username"]
+       mas_internal_id = introspection_response["sub"]
 
-      user = User.find_or_create_by(mas_user_id: matrix_user_id) do |u|
-        u.mas_user_id = matrix_user_id
+       # Source of truth: Matrix user ID @username:tween.im
+       matrix_user_id = if mas_username && !mas_username.empty?
+                          "@#{mas_username}:tween.im"
+                        else
+                          # Fallback: use MAS internal ID as matrix_user_id if no username
+                          "@#{mas_internal_id}:tween.im"
+                        end
 
-        if mas_username && !mas_username.empty?
-          u.matrix_user_id = "@#{mas_username}:tween.im"
-          u.matrix_username = "#{mas_username}:tween.im"
-          u.matrix_homeserver = "tween.im"
-        else
-          # Fallback: use MAS internal ID as matrix_user_id if no username available
-          u.matrix_user_id = matrix_user_id
-          u.matrix_username = matrix_user_id
-          u.matrix_homeserver = "tween.im"
-        end
-      end
+       user = User.find_or_create_by(matrix_user_id: matrix_user_id) do |u|
+         u.mas_user_id = mas_internal_id
+         u.matrix_user_id = matrix_user_id
+
+         if mas_username && !mas_username.empty?
+           u.matrix_username = "#{mas_username}:tween.im"
+           u.matrix_homeserver = "tween.im"
+         else
+           # Fallback for internal ID
+           u.matrix_username = "#{mas_internal_id}:tween.im"
+           u.matrix_homeserver = "tween.im"
+         end
+       end
 
       scopes = auth_request["scope"]
       tep_response = mas_client.exchange_matrix_token_for_tep(
