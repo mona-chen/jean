@@ -59,7 +59,7 @@ class GroupGift < ApplicationRecord
         raise GiftError.new("GIFT_EXPIRED", "Gift has expired")
       end
 
-      amount = calculate_amount_for_opening
+      amount = get_next_opening_amount
 
       opening = gift.openings.create!(
         user_id: user_id,
@@ -77,7 +77,7 @@ class GroupGift < ApplicationRecord
     end
   end
 
-  def calculate_amount_for_opening
+  def get_next_opening_amount
     if distribution == "equal"
       calculate_equal_distribution.first
     else
@@ -158,18 +158,5 @@ class GroupGift < ApplicationRecord
       @code = code
     end
   end
-end
 
-class GiftOpening < ApplicationRecord
-  self.table_name = :gift_openings
-  self.primary_key = :id
-
-  belongs_to :group_gift, class_name: "GroupGift", foreign_key: :group_gift_id
-
-  validates :group_gift_id, presence: true
-  validates :user_id, presence: true
-  validates :amount, numericality: { greater_than_or_equal_to: 0 }
-
-  scope :for_user, ->(user_id) { where(user_id: user_id) }
-  scope :recent, -> { order(created_at: :desc) }
 end

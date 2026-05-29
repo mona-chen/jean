@@ -78,8 +78,9 @@ class TepTokenServiceTest < ActiveSupport::TestCase
       { user_id: @user_id, miniapp_id: @miniapp_id }
     )
 
-    # Decode and modify token_type
-    decoded = JWT.decode(token, nil, false)
+    # Decode and modify token_type (strip tep. prefix first)
+    jwt_token = token.start_with?("tep.") ? token[4..-1] : token
+    decoded = JWT.decode(jwt_token, nil, false)
     payload = decoded[0]
     payload["token_type"] = "wrong_type"
 
@@ -95,7 +96,9 @@ class TepTokenServiceTest < ActiveSupport::TestCase
       { user_id: @user_id, miniapp_id: @miniapp_id }
     )
 
-    decoded = JWT.decode(token, nil, false)
+    # Strip tep. prefix before raw JWT decode
+    jwt_token = token.start_with?("tep.") ? token[4..-1] : token
+    decoded = JWT.decode(jwt_token, nil, false)
     headers = decoded.last
 
     assert_equal "RS256", headers["alg"]
@@ -213,11 +216,44 @@ class TepTokenServiceTest < ActiveSupport::TestCase
       { user_id: @user_id, miniapp_id: @miniapp_id }
     )
 
-    # Decode without verification to check algorithm
-    decoded = JWT.decode(token, nil, false)
+    # Decode without verification to check algorithm (strip tep. prefix first)
+    jwt_token = token.start_with?("tep.") ? token[4..-1] : token
+    decoded = JWT.decode(jwt_token, nil, false)
     headers = decoded.last
 
     assert_equal "RS256", headers["alg"]
     assert_equal TepTokenService::KEY_ID, headers["kid"]
+  end
+
+  test "encode should raise when private key is not configured" do
+    original_key = ENV["TMCP_PRIVATE_KEY"]
+    original_private = TepTokenService.instance_variable_get(:@_private_key)
+    original_public = TepTokenService.instance_variable_get(:@_public_key)
+    original_test_predicate = Rails.env.method(:test?)
+
+    begin
+      ENV.delete("TMCP_PRIVATE_KEY")
+      TepTokenService.instance_variable_set(:@_private_key, nil)
+      TepTokenService.instance_variable_set(:@_public_key, nil)
+
+      # Override Rails.env.test? to return false (simulate production)
+      Rails.env.define_singleton_method(:test?) { false }
+
+      # load_key should log an error but not raise
+      TepTokenService.send(:load_key)
+      assert_nil TepTokenService.send(:private_key)
+
+      # encode should raise because there's no key to sign with
+      assert_raises(JWT::EncodeError) do
+        TepTokenService.encode(
+          { user_id: @user_id, miniapp_id: @miniapp_id }
+        )
+      end
+    ensure
+      ENV["TMCP_PRIVATE_KEY"] = original_key if original_key
+      TepTokenService.instance_variable_set(:@_private_key, original_private)
+      TepTokenService.instance_variable_set(:@_public_key, original_public)
+      Rails.env.define_singleton_method(:test?, &original_test_predicate)
+    end
   end
 end

@@ -48,6 +48,17 @@ class MasClientService
   end
 
   def refresh_access_token(refresh_token)
+    # Development bypass: return mock refreshed token
+    if ENV["DEV_BYPASS_MAS"] == "true"
+      return {
+        access_token: "mock_refreshed_#{SecureRandom.alphanumeric(16)}",
+        token_type: "Bearer",
+        expires_in: 86400,
+        refresh_token: "mock_rt_#{SecureRandom.alphanumeric(16)}",
+        expires_at: Time.current.to_i + 86400
+      }
+    end
+
     response = http_client.post(@token_url) do |req|
       req.headers["Content-Type"] = "application/x-www-form-urlencoded"
       req.body = URI.encode_www_form({
@@ -73,6 +84,11 @@ class MasClientService
   end
 
   def introspect_token(access_token)
+    # Development bypass: use Synapse whoami instead of MAS
+    if ENV["DEV_BYPASS_MAS"] == "true"
+      return introspect_via_synapse(access_token)
+    end
+
     response = http_client.post(@introspection_url) do |req|
       req.headers["Content-Type"] = "application/x-www-form-urlencoded"
       req.body = URI.encode_www_form({
@@ -85,6 +101,30 @@ class MasClientService
     parse_mas_error(response) unless response.success?
 
     JSON.parse(response.body)
+  end
+
+  # Development mode: validate token via Synapse whoami endpoint
+  def introspect_via_synapse(access_token)
+    synapse_url = ENV["MATRIX_API_URL"] || "http://localhost:8008"
+
+    response = http_client.get("#{synapse_url}/_matrix/client/v3/account/whoami") do |req|
+      req.headers["Authorization"] = "Bearer #{access_token}"
+    end
+
+    if response.success?
+      data = JSON.parse(response.body)
+      {
+        "active" => true,
+        "sub" => data["user_id"],
+        "username" => data["user_id"].gsub("@", "").split(":").first,
+        "scope" => "openid urn:matrix:org.matrix.msc2967.client:api:*"
+      }
+    else
+      { "active" => false }
+    end
+  rescue => e
+    Rails.logger.error "Synapse introspection failed: #{e.message}"
+    { "active" => false }
   end
 
   def refresh_access_token_for_matrix(current_token)
@@ -252,7 +292,7 @@ class MasClientService
     end
 
     {
-      access_token: "tep.#{tep_token}",
+      access_token: tep_token,
       token_type: "Bearer",
       expires_in: 86400,
       refresh_token: tep_refresh_token,
@@ -344,89 +384,6 @@ class MasClientService
     { success: false, error: "internal_error", message: e.message }
   end
 
-  def exchange_matrix_token_for_tep(matrix_access_token, miniapp_id, scopes, miniapp_context = {}, introspection_response = nil)
-    mas_user_info = introspection_response || get_user_info(matrix_access_token)
-    mas_user_id = mas_user_info["sub"]
-    mas_username = mas_user_info["username"]
-
-    # Construct Matrix user ID for PROTO.md compliance
-    matrix_user_id = if mas_username.to_s.strip.empty?
-                       mas_user_id # fallback to internal ID
-    else
-                       "@#{mas_username}:#{@matrix_domain}"
-    end
-
-    wallet_id = if mas_user_id.to_s.strip.empty?
-                  "tw_unknown"
-    else
-                  "tw_#{mas_user_id.gsub(/[@:]/, '_')}"
-    end
-
-    session_id = generate_session_id
-
-    device_id = mas_user_info.dig("device_id") || "unknown"
-    mas_session_id = mas_user_info.dig("sid") || "unknown"
-
-    tep_payload = {
-      user_id: matrix_user_id, # Use Matrix user ID for TEP token claims
-      miniapp_id: miniapp_id,
-      user_context: {
-        display_name: mas_user_info["display_name"],
-        avatar_url: mas_user_info["avatar_url"]
-      }
-    }
-
-    tep_token = TepTokenService.encode(
-      tep_payload,
-      scopes: scopes,
-      wallet_id: wallet_id,
-      session_id: session_id,
-      miniapp_context: miniapp_context,
-      mas_session: {
-        active: true,
-        refresh_token_id: "rt_#{SecureRandom.alphanumeric(16)}"
-      },
-      authorization_context: build_authorization_context({ miniapp_context: miniapp_context }),
-      approval_history: build_approval_history(mas_user_id, miniapp_id, scopes),
-      delegated_from: "matrix_session",
-      matrix_session_ref: {
-        device_id: device_id,
-        session_id: mas_session_id
-      }
-    )
-    tep_refresh_token = "rt_#{SecureRandom.alphanumeric(24)}"
-
-    Rails.cache.write("refresh_token:#{tep_refresh_token}", {
-      user_id: mas_user_id, # Use internal ID for refresh token cache
-      miniapp_id: miniapp_id,
-      scope: scopes,
-      created_at: Time.current.to_i
-    }, expires_in: 30.days)
-
-    new_matrix_token = refresh_access_token_for_matrix(matrix_access_token)
-
-    # Auto-register user in wallet service during TEP token issuance
-    begin
-      WalletService.ensure_user_registered(matrix_user_id, matrix_access_token)
-    rescue StandardError => e
-      # Log but don't fail TEP token issuance
-      Rails.logger.warn "Failed to register user #{matrix_user_id} in wallet service during token exchange: #{e.message}"
-    end
-
-    {
-      access_token: "tep.#{tep_token}",
-      token_type: "Bearer",
-      expires_in: 86400,
-      refresh_token: tep_refresh_token,
-      scope: scopes.join(" "),
-      user_id: matrix_user_id, # Return Matrix user ID for PROTO.md compliance
-      wallet_id: wallet_id,
-      matrix_access_token: new_matrix_token[:access_token],
-      matrix_expires_in: new_matrix_token[:expires_in],
-      delegated_session: true
-    }
-  end
-
   def validate_mas_token_for_matrix_operations(access_token)
     info = introspect_token(access_token)
 
@@ -448,6 +405,9 @@ class MasClientService
   end
 
   def load_client_secret
+    # Allow empty client_secret in development mode
+    return if ENV["DEV_BYPASS_MAS"] == "true"
+
     if @client_secret_file && File.exist?(@client_secret_file)
       @client_secret = File.read(@client_secret_file).strip
     elsif !@client_secret

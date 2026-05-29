@@ -5,6 +5,11 @@ class MatrixEventService
   MATRIX_API_URL = ENV["MATRIX_API_URL"] || "https://matrix.example.com"
   MATRIX_ACCESS_TOKEN = ENV["MATRIX_ACCESS_TOKEN"]
 
+  # Default sender for bot-initiated events (when no user sender is specified)
+  DEFAULT_SENDER = "@_tmcp_payments:tween.example".freeze
+  SOCIAL_BOT_USER = "@_tmcp_social:tween.example".freeze
+  COMMERCE_BOT_USER = "@_tmcp_commerce:tween.example".freeze
+
   class << self
     def payment_bot
       @payment_bot ||= PaymentBotService.new
@@ -102,24 +107,47 @@ class MatrixEventService
         transfer_data["recipient_acceptance_required"] || transfer_data[:recipient_acceptance_required]
       )
 
+      room_id = transfer_data["room_id"] || transfer_data[:room_id]
+      return unless room_id
+
+      # Convert amount to string to avoid JSON float issues with Matrix
+      amount = transfer_data["amount"] || transfer_data[:amount]
+      amount_cents = (amount.to_f * 100).to_i if amount
+
+      # Get sender's display name for the body text
+      sender_display_name = sender["display_name"] || sender[:display_name] ||
+                           (sender["user_id"] || sender[:user_id]).to_s.split(":").first.gsub("@", "")
+
+      # Ensure currency is never empty - default to NGN for test environment
+      currency = transfer_data["currency"] || transfer_data[:currency]
+      currency = "NGN" if currency.nil? || currency.to_s.empty?
+
       event = {
         type: "m.tween.wallet.p2p",
+        room_id: room_id,
+        # Use sender's user_id so the event appears to come from the actual sender, not the bot
+        sender_id: sender["user_id"] || sender[:user_id],
         content: {
           msgtype: "m.tween.money",
-          body: "💸 Sent #{transfer_data['amount'] || transfer_data[:amount]} #{transfer_data['currency'] || transfer_data[:currency]}",
+          body: "💸 #{sender_display_name} sent #{amount} #{currency}",
           transfer_id: transfer_data["transfer_id"] || transfer_data[:transfer_id],
-          amount: transfer_data["amount"] || transfer_data[:amount],
-          currency: transfer_data["currency"] || transfer_data[:currency],
+          amount: amount.to_s,
+          amount_cents: amount_cents,
+          currency: currency,
           note: transfer_data["note"] || transfer_data[:note],
-          sender: { user_id: sender["user_id"] || sender[:user_id] },
-          recipient: { user_id: recipient["user_id"] || recipient[:user_id] },
+          sender: {
+            user_id: sender["user_id"] || sender[:user_id],
+            display_name: sender["display_name"] || sender[:display_name]
+          },
+          recipient: {
+            user_id: recipient["user_id"] || recipient[:user_id],
+            display_name: recipient["display_name"] || recipient[:display_name]
+          },
           status: status,
           recipient_acceptance_required: recipient_acceptance_required,
           timestamp: transfer_data["timestamp"] || transfer_data[:timestamp]
+        }
       }
-      
-      room_id = transfer_data["room_id"] || transfer_data[:room_id]
-      return unless room_id
 
       publish_event(event)
     end
@@ -154,6 +182,7 @@ class MatrixEventService
 
       event = {
         type: "m.tween.wallet.p2p.status",
+        sender_id: DEFAULT_SENDER,
         content: {
           transfer_id: transfer_id,
           status: status,
@@ -170,6 +199,7 @@ class MatrixEventService
     def publish_gift_created(gift_data)
       event = {
         type: "m.tween.gift",
+        sender_id: gift_data["creator_user_id"] || gift_data[:creator_user_id] || DEFAULT_SENDER,
         content: {
           msgtype: "m.tween.gift",
           body: "🎁 Gift: #{gift_data['total_amount']} #{gift_data['currency']}",
@@ -197,6 +227,7 @@ class MatrixEventService
     def publish_gift_opened(gift_id, opened_data)
       event = {
         type: "m.tween.gift.opened",
+        sender_id: opened_data["user_id"] || opened_data[:user_id] || DEFAULT_SENDER,
         content: {
           gift_id: gift_id,
           opened_by: opened_data["user_id"],
@@ -243,8 +274,179 @@ class MatrixEventService
 
       event = {
         type: "m.tween.miniapp.#{event_type}",
+        sender_id: user_id || DEFAULT_SENDER,
         content: event_content,
         room_id: room_id || get_user_room(user_id)
+      }
+
+      publish_event(event)
+    end
+
+    def publish_video_published(video_data)
+      event = {
+        type: "m.tween.social.video.published",
+        sender_id: video_data["creator_id"] || video_data[:creator_id] || SOCIAL_BOT_USER,
+        content: {
+          msgtype: "m.tween.social.video",
+          body: "New video: #{video_data['caption'] || 'Video'}",
+          video_id: video_data["video_id"],
+          creator_id: video_data["creator_id"],
+          thumbnail_url: video_data["thumbnail_url"],
+          published_at: video_data["published_at"] || Time.current.iso8601
+        },
+        room_id: video_data["room_id"] || get_default_room
+      }
+
+      publish_event(event)
+    end
+
+    def publish_video_deleted(video_data)
+      event = {
+        type: "m.tween.social.video.deleted",
+        sender_id: SOCIAL_BOT_USER,
+        content: {
+          video_id: video_data["video_id"],
+          creator_id: video_data["creator_id"],
+          deleted_at: video_data["deleted_at"] || Time.current.iso8601
+        },
+        room_id: video_data["room_id"] || get_default_room
+      }
+
+      publish_event(event)
+    end
+
+    def publish_like_created(like_data)
+      event = {
+        type: "m.tween.social.like.created",
+        sender_id: like_data["user_id"] || like_data[:user_id] || DEFAULT_SENDER,
+        content: {
+          video_id: like_data["video_id"],
+          user_id: like_data["user_id"],
+          created_at: like_data["created_at"] || Time.current.iso8601
+        },
+        room_id: like_data["room_id"] || get_user_room(like_data["creator_id"] || like_data[:creator_id])
+      }
+
+      publish_event(event)
+    end
+
+    def publish_comment_created(comment_data)
+      event = {
+        type: "m.tween.social.comment.created",
+        sender_id: comment_data["author_id"] || comment_data[:author_id] || DEFAULT_SENDER,
+        content: {
+          msgtype: "m.tween.social.comment",
+          body: comment_data["body"],
+          video_id: comment_data["video_id"],
+          comment_id: comment_data["comment_id"],
+          author_id: comment_data["author_id"],
+          created_at: comment_data["created_at"] || Time.current.iso8601
+        },
+        room_id: comment_data["room_id"] || get_user_room(comment_data["creator_id"] || comment_data[:creator_id])
+      }
+
+      publish_event(event)
+    end
+
+    def publish_follow_created(follow_data)
+      event = {
+        type: "m.tween.social.follow.created",
+        sender_id: follow_data["follower_id"] || follow_data[:follower_id] || DEFAULT_SENDER,
+        content: {
+          follower_id: follow_data["follower_id"],
+          creator_id: follow_data["creator_id"],
+          created_at: follow_data["created_at"] || Time.current.iso8601
+        },
+        room_id: follow_data["room_id"] || get_user_room(follow_data["creator_id"] || follow_data[:creator_id])
+      }
+
+      publish_event(event)
+    end
+
+    def publish_moderation_updated(moderation_data)
+      event = {
+        type: "m.tween.social.moderation.updated",
+        sender_id: SOCIAL_BOT_USER,
+        content: {
+          video_id: moderation_data["video_id"],
+          moderation_status: moderation_data["moderation_status"],
+          creator_id: moderation_data["creator_id"],
+          message: moderation_data["message"],
+          updated_at: moderation_data["updated_at"] || Time.current.iso8601
+        },
+        room_id: moderation_data["room_id"] || get_user_room(moderation_data["creator_id"] || moderation_data[:creator_id])
+      }
+
+      publish_event(event)
+    end
+
+    def publish_order_created(order_data)
+      event = {
+        type: "m.tween.commerce.order.created",
+        sender_id: COMMERCE_BOT_USER,
+        content: {
+          msgtype: "m.tween.commerce.order",
+          order_id: order_data["order_id"],
+          payment_id: order_data["payment_id"],
+          merchant_id: order_data["merchant_id"],
+          buyer_user_id: order_data["buyer_user_id"],
+          status: order_data["status"],
+          total: order_data["total"],
+          created_at: order_data["created_at"] || Time.current.iso8601
+        },
+        room_id: order_data["room_id"] || get_user_room(order_data["buyer_user_id"] || order_data[:buyer_user_id])
+      }
+
+      publish_event(event)
+    end
+
+    def publish_order_updated(order_data)
+      event = {
+        type: "m.tween.commerce.order.updated",
+        sender_id: COMMERCE_BOT_USER,
+        content: {
+          order_id: order_data["order_id"],
+          status: order_data["status"],
+          fulfillment_status: order_data["fulfillment_status"],
+          updated_at: order_data["updated_at"] || Time.current.iso8601
+        },
+        room_id: order_data["room_id"] || get_user_room(order_data["buyer_user_id"] || order_data[:buyer_user_id])
+      }
+
+      publish_event(event)
+    end
+
+    def publish_checkout_created(checkout_data)
+      event = {
+        type: "m.tween.commerce.checkout.created",
+        sender_id: COMMERCE_BOT_USER,
+        content: {
+          checkout_id: checkout_data["checkout_id"],
+          cart_id: checkout_data["cart_id"],
+          merchant_id: checkout_data["merchant_id"],
+          buyer_user_id: checkout_data["buyer_user_id"],
+          expires_at: checkout_data["expires_at"],
+          created_at: checkout_data["created_at"] || Time.current.iso8601
+        },
+        room_id: checkout_data["room_id"] || get_user_room(checkout_data["buyer_user_id"] || checkout_data[:buyer_user_id])
+      }
+
+      publish_event(event)
+    end
+
+    def publish_refund_updated(refund_data)
+      event = {
+        type: "m.tween.commerce.refund.updated",
+        sender_id: COMMERCE_BOT_USER,
+        content: {
+          refund_id: refund_data["refund_id"],
+          order_id: refund_data["order_id"],
+          amount: refund_data["amount"],
+          status: refund_data["status"],
+          reason: refund_data["reason"],
+          updated_at: refund_data["updated_at"] || Time.current.iso8601
+        },
+        room_id: refund_data["room_id"] || get_user_room(refund_data["buyer_user_id"] || refund_data[:buyer_user_id])
       }
 
       publish_event(event)
@@ -254,6 +456,7 @@ class MatrixEventService
       event = {
         type: "m.room.tween.authorization",
         state_key: miniapp_id,
+        sender_id: user_id || DEFAULT_SENDER,
         content: {
           authorized: authorized,
           timestamp: Time.current.to_i,
@@ -269,26 +472,47 @@ class MatrixEventService
 
     private
 
+    # Publish event using Application Service identity assertion
+    # AS uses as_token as access_token and user_id query param to masquerade
+    # Events appear to come from the actual sender (Alice/Bob), not the bot
     def publish_event(event_data)
-      return unless MATRIX_ACCESS_TOKEN
+      # Use AS token for authentication (not user access token)
+      as_token = ENV["MATRIX_AS_TOKEN"]
+      return unless as_token
+
+      room_id = event_data[:room_id]
+      return unless room_id
+
+      # Determine sender - use explicit sender_id from event_data, or extract from content
+      # This makes events appear to come from the actual sender (Alice/Bob), not the bot
+      sender_id = event_data[:sender_id] ||
+                  event_data.dig(:content, :sender, :user_id) ||
+                  event_data.dig("content", "sender", "user_id")
+
+      # Fall back to default sender if none found
+      sender_id = DEFAULT_SENDER if sender_id.nil?
 
       begin
-        uri = URI("#{MATRIX_API_URL}/_matrix/client/v3/rooms/#{event_data[:room_id]}/send/m.room.message")
+        # Build URI with user_id query param for identity assertion
+        # The AS sends the event on behalf of the actual user (Alice/Bob)
+        uri = URI("#{MATRIX_API_URL}/_matrix/client/v3/rooms/#{room_id}/send/#{event_data[:type]}")
+        uri.query = URI.encode_www_form({ "user_id" => sender_id })
+
         http = Net::HTTP.new(uri.host, uri.port)
-        http.use_ssl = true
+        http.use_ssl = (uri.scheme == "https")
 
         request = Net::HTTP::Post.new(uri)
-        request["Authorization"] = "Bearer #{MATRIX_ACCESS_TOKEN}"
+        request["Authorization"] = "Bearer #{as_token}"
         request["Content-Type"] = "application/json"
-        request.body = event_data.to_json
+        request.body = event_data[:content].to_json
 
         response = http.request(request)
 
         if response.code.to_i == 200
-          Rails.logger.info "Matrix event published: #{event_data[:type]}"
+          Rails.logger.info "Matrix event published: #{event_data[:type]} to room #{room_id}"
           JSON.parse(response.body)["event_id"]
         else
-          Rails.logger.error "Failed to publish Matrix event: #{response.body}"
+          Rails.logger.error "Failed to publish Matrix event: #{response.code} - #{response.body}"
           nil
         end
       rescue => e

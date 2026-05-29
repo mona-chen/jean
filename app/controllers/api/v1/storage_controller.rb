@@ -1,4 +1,4 @@
-class Api::V1::StorageController < ApplicationController
+class Api::V1::StorageController < Api::BaseController
   # TMCP Protocol Section 10.3: Mini-App Storage System
 
   before_action :authenticate_tep_token
@@ -185,9 +185,10 @@ class Api::V1::StorageController < ApplicationController
           version: "1.0.0",
           classification: :community,
           status: :active,
+          client_type: :public,
           manifest: {
             "permissions" => { "storage" => { "read" => true, "write" => true } },
-            "scopes" => [ "storage_read", "storage_write" ]
+            "scopes" => [ "storage:read", "storage:write" ]
           }
         )
       end

@@ -2,15 +2,86 @@ class WalletService
   # TMCP Protocol Section 6: Real Wallet Service Integration
   # Integrated with Tween Pay API at https://wallettween.im
 
-  class WalletError < StandardError; end
+  class WalletError < StandardError
+    attr_reader :code
+
+    def initialize(message, code = nil)
+      @code = code
+      super(message)
+    end
+  end
 
   # Circuit breakers for different operations (PROTO Section 7.7)
-  @@circuit_breakers = {
-    balance: CircuitBreakerService.new("wallet_balance"),
-    payments: CircuitBreakerService.new("wallet_payments"),
-    transfers: CircuitBreakerService.new("wallet_transfers"),
-    verification: CircuitBreakerService.new("wallet_verification")
-  }
+  # Per-user circuit breakers to prevent one user from affecting others
+  # Using Concurrent::Map for thread-safe atomic operations
+  require 'concurrent'
+
+  CIRCUIT_BREAKERS = Concurrent::Map.new
+  CIRCUIT_BREAKER_ACCESS_TIMES = Concurrent::Map.new
+  CIRCUIT_BREAKER_MUTEX = Mutex.new
+  MAX_CIRCUIT_BREAKERS = 10_000 # LRU limit
+
+  def self.get_circuit_breaker(user_id, operation)
+    key = "#{user_id}:#{operation}"
+
+    # Update access time for LRU tracking (thread-safe)
+    CIRCUIT_BREAKER_ACCESS_TIMES[key] = Time.current.to_f
+
+    # Check if we need to evict old entries (do this periodically, not every call)
+    if CIRCUIT_BREAKERS.size >= MAX_CIRCUIT_BREAKERS && rand < 0.01 # 1% chance to trigger eviction
+      evict_oldest_if_needed
+    end
+
+    # Return existing or create new circuit breaker (thread-safe atomic operation)
+    # Concurrent::Map has compute_if_absent for atomic operations
+    CIRCUIT_BREAKERS.compute_if_absent(key) do
+      CircuitBreakerService.new("#{operation}:#{user_id}")
+    end
+  end
+
+  def self.reset_circuit_breakers_for_user(user_id)
+    [ :balance, :payments, :transfers, :verification ].each do |operation|
+      key = "#{user_id}:#{operation}"
+      CIRCUIT_BREAKERS.delete(key)
+      CIRCUIT_BREAKER_ACCESS_TIMES.delete(key)
+    end
+  end
+
+  def self.circuit_breaker_stats
+    {
+      total_circuit_breakers: CIRCUIT_BREAKERS.size,
+      max_allowed: MAX_CIRCUIT_BREAKERS,
+      operations: CIRCUIT_BREAKERS.keys.group_by { |k| k.split(":").last }.transform_values(&:count)
+    }
+  end
+
+  private
+
+  def self.evict_oldest_if_needed
+    # Use mutex only for the eviction operation, not for normal reads
+    CIRCUIT_BREAKER_MUTEX.synchronize do
+      return unless CIRCUIT_BREAKERS.size >= MAX_CIRCUIT_BREAKERS
+
+      # Sort by access time and remove oldest 10%
+      sorted = CIRCUIT_BREAKER_ACCESS_TIMES.sort_by { |_, time| time }
+      to_remove = (MAX_CIRCUIT_BREAKERS * 0.1).ceil
+
+      sorted.first(to_remove).each do |key, _|
+        CIRCUIT_BREAKERS.delete(key)
+        CIRCUIT_BREAKER_ACCESS_TIMES.delete(key)
+      end
+
+      Rails.logger.info "[CircuitBreaker] Evicted #{to_remove} old circuit breakers. Remaining: #{CIRCUIT_BREAKERS.size}"
+    end
+  end
+
+  # Extract a stable identifier from TEP token for per-user circuit breaking.
+  # Uses a deterministic hash of the token itself so we never need to decode the JWT.
+  def self.extract_user_id_from_tep(tep_token)
+    return "anonymous" if tep_token.blank?
+
+    Digest::SHA256.hexdigest(tep_token)[0, 32]
+  end
 
   # Configuration from initializer
   WALLET_API_BASE_URL = ENV.fetch("WALLET_API_BASE_URL", "https://wallet.tween.im")
@@ -24,11 +95,11 @@ class WalletService
       "Accept" => "application/json"
     }
 
-    if WALLET_API_KEY.present?
+    if WALLET_API_KEY.present? && !headers["Authorization"]
       default_headers["Authorization"] = "Bearer #{WALLET_API_KEY}"
     end
 
-    headers.merge!(default_headers)
+    headers = default_headers.merge(headers)
 
     begin
       response = case method.to_sym
@@ -46,10 +117,17 @@ class WalletService
 
       unless response.success?
         Rails.logger.error "Wallet API error: #{response.status} - #{response.body}"
+        begin
+          error_data = JSON.parse(response.body)
+          if error_data["error"]
+            raise WalletError.new(error_data["error"]["message"] || "Wallet service error", error_data["error"]["code"])
+          end
+        rescue JSON::ParserError
+        end
         raise WalletError.new("Wallet service unavailable (HTTP #{response.status})")
       end
 
-      JSON.parse(response.body)
+      JSON.parse(response.body, symbolize_names: true)
     rescue Faraday::Error => e
       Rails.logger.error "Wallet API connection error: #{e.message}"
       raise WalletError.new("Wallet service unavailable")
@@ -76,99 +154,82 @@ class WalletService
   end
 
   def self.get_balance(user_id, tep_token = nil)
-    @@circuit_breakers[:balance].call do
+    get_circuit_breaker(user_id, :balance).call do
       Rails.logger.info "Getting balance for user #{user_id}"
 
       # Call tween-pay TMCP balance endpoint
-      response = make_wallet_request(:get, "/api/v1/tmcp/wallets/balance",
-                                   nil, { "Authorization" => "Bearer #{tep_token}" })
+      data = make_wallet_request(:get, "/api/v1/tmcp/wallets/balance",
+                                  nil, { "Authorization" => "Bearer #{tep_token}" })
+      data = deep_symbolize_keys(data)
 
-      if response.success?
-        data = JSON.parse(response.body).symbolize_keys
-
-        # Transform response to match jean's expected format
-        {
-          wallet_id: data[:wallet_id],
+      # Transform response to match jean's expected format
+      {
+        wallet_id: data[:wallet_id],
           balance: {
             available: data.dig(:balance, :available) || 0.00,
             pending: data.dig(:balance, :pending) || 0.00,
-            currency: data.dig(:balance, :currency) || "USD"
+            currency: data.dig(:balance, :currency) || "NGN"
           },
-          limits: data[:limits] || {
-            daily_limit: 1000.00,
-            daily_used: 0.00,
-            transaction_limit: 500.00
-          },
-          verification: data[:verification] || {
-            level: 0,
-            level_name: "Unverified",
-            features: [],
-            can_upgrade: true,
-            next_level: 1,
-            upgrade_requirements: [ "id_verification" ]
-          },
-          status: data[:status] || "active"
-        }
-      else
-        Rails.logger.error "Wallet balance API error: #{response.status} - #{response.body}"
-        raise WalletError.new("Failed to get balance from wallet service")
-      end
+        limits: data[:limits] || {
+          daily_limit: 1000.00,
+          daily_used: 0.00,
+          transaction_limit: 500.00
+        },
+        verification: data[:verification] || {
+          level: 0,
+          level_name: "Unverified",
+          features: [],
+          can_upgrade: true,
+          next_level: 1,
+          upgrade_requirements: [ "id_verification" ]
+        },
+        status: data[:status] || "active"
+      }
     end
   end
 
   def self.get_transactions(user_id, limit: 50, offset: 0, tep_token: nil)
-    @@circuit_breakers[:balance].call do
+    get_circuit_breaker(user_id, :balance).call do
       Rails.logger.info "Getting transactions for user #{user_id}"
 
       # Call tween-pay TMCP transactions endpoint
-      response = make_wallet_request(:get, "/api/v1/tmcp/wallet/transactions?limit=#{limit}&offset=#{offset}",
-                                   nil, { "Authorization" => "Bearer #{tep_token}" })
+      data = make_wallet_request(:get, "/api/v1/tmcp/wallet/transactions?limit=#{limit}&offset=#{offset}",
+                                  nil, { "Authorization" => "Bearer #{tep_token}" })
+      data = data.symbolize_keys
 
-      if response.success?
-        data = JSON.parse(response.body).symbolize_keys
-
-        # Transform response to match jean's expected format
-        {
-          transactions: data[:transactions] || [],
-          pagination: data[:pagination] || {
-            total: 0,
-            limit: limit,
-            offset: offset,
-            has_more: false
-          }
+      # Transform response to match jean's expected format
+      {
+        transactions: data[:transactions] || [],
+        pagination: data[:pagination] || {
+          total: 0,
+          limit: limit,
+          offset: offset,
+          has_more: false
         }
-      else
-        Rails.logger.error "Wallet transactions API error: #{response.status} - #{response.body}"
-        raise WalletError.new("Failed to get transactions from wallet service")
-      end
+      }
     end
   end
 
   def self.resolve_user(user_id, tep_token: nil)
-    @@circuit_breakers[:verification].call do
-      Rails.logger.info "Resolving user: #{user_id.inspect}"
-
+    get_circuit_breaker(user_id, :verification).call do
       # Call tween-pay TMCP user resolution endpoint
       begin
-        response = make_wallet_request(:get, "/api/v1/tmcp/users/resolve/#{user_id}",
-                                     nil, { "Authorization" => "Bearer #{tep_token}" })
+        data = make_wallet_request(:get, "/api/v1/tmcp/users/resolve/#{user_id}",
+                                    nil, { "Authorization" => "Bearer #{tep_token}" })
+        data = data.symbolize_keys
 
-        if response.success?
-          data = response.symbolize_keys
-
-          # Transform response to match jean's expected format
-          {
-            user_id: data[:user_id] || user_id,
-            has_wallet: data[:has_wallet] || true,
-            wallet_id: data[:wallet_id],
-            verification_level: data[:verification_level] || 0,
-            verification_name: data[:verification_name] || "None",
-            can_invite: data[:can_invite] || false
-          }
-        end
+        # Transform response to match jean's expected format
+        {
+          user_id: data[:user_id] || user_id,
+          has_wallet: data.fetch(:has_wallet, true),
+          wallet_id: data[:wallet_id],
+          verification_level: data[:verification_level] || 0,
+          verification_name: data[:verification_name] || "None",
+          can_invite: data[:can_invite] || false
+        }
       rescue WalletError => e
-        if e.message.include?("HTTP 404")
-          Rails.logger.info "User #{user_id} not found in wallet service (404), returning default response"
+        if e.code == "WALLET_NOT_FOUND" || e.code == "USER_NOT_FOUND"
+          Rails.logger.info "User #{user_id} not found in wallet service (#{e.code}), returning default response"
           # Return default response for non-existent users (allows wallet creation)
           {
             user_id: user_id,
@@ -187,7 +248,8 @@ class WalletService
   end
 
   def self.initiate_p2p_transfer(recipient_user_id, amount, currency, tep_token, options = {})
-    @@circuit_breakers[:transfers].call do
+    user_id = extract_user_id_from_tep(tep_token)
+    get_circuit_breaker(user_id, :transfers).call do
       request_body = {
         recipient: recipient_user_id,
         amount: amount,
@@ -206,7 +268,8 @@ class WalletService
   end
 
   def self.confirm_p2p_transfer(transfer_id, auth_proof, tep_token)
-    @@circuit_breakers[:transfers].call do
+    user_id = extract_user_id_from_tep(tep_token)
+    get_circuit_breaker(user_id, :transfers).call do
       request_body = {
         auth_proof: auth_proof
       }
@@ -220,7 +283,8 @@ class WalletService
   end
 
   def self.accept_p2p_transfer(transfer_id, tep_token)
-    @@circuit_breakers[:transfers].call do
+    user_id = extract_user_id_from_tep(tep_token)
+    get_circuit_breaker(user_id, :transfers).call do
       response = make_wallet_request(:post, "/api/v1/tmcp/transfers/p2p/#{transfer_id}/accept",
                                    nil,
                                    { "Authorization" => "Bearer #{tep_token}" })
@@ -230,7 +294,8 @@ class WalletService
   end
 
   def self.reject_p2p_transfer(transfer_id, tep_token = nil, reason = nil)
-    @@circuit_breakers[:transfers].call do
+    user_id = tep_token.present? ? extract_user_id_from_tep(tep_token) : "system"
+    get_circuit_breaker(user_id, :transfers).call do
       headers = {}
       if tep_token
         headers["Authorization"] = "Bearer #{tep_token}"
@@ -251,7 +316,8 @@ class WalletService
   end
 
   def self.get_transfer_info(transfer_id)
-    @@circuit_breakers[:transfers].call do
+    # Internal endpoint - use system circuit breaker
+    get_circuit_breaker("system", :transfers).call do
       internal_api_key = ENV.fetch("WALLET_INTERNAL_API_KEY", "")
 
       response = make_wallet_request(:get, "/api/v1/internal/transfers/#{transfer_id}",
@@ -263,7 +329,8 @@ class WalletService
   end
 
   def self.create_payment_request(amount, currency, description, tep_token, options = {})
-    @@circuit_breakers[:payments].call do
+    user_id = extract_user_id_from_tep(tep_token)
+    get_circuit_breaker(user_id, :payments).call do
       request_body = {
         amount: amount,
         currency: currency,
@@ -282,7 +349,8 @@ class WalletService
   end
 
   def self.authorize_payment(payment_id, auth_proof, tep_token)
-    @@circuit_breakers[:payments].call do
+    user_id = extract_user_id_from_tep(tep_token)
+    get_circuit_breaker(user_id, :payments).call do
       request_body = {
         auth_proof: auth_proof
       }
@@ -319,117 +387,17 @@ class WalletService
     }
   end
 
-  def self.request_mfa_challenge(payment_id, user_id)
-    # Mock MFA challenge
-    {
-      challenge_id: "mfa_mock_#{SecureRandom.hex(8)}",
-      methods: [
-        {
-          type: "transaction_pin",
-          enabled: true,
-          display_name: "Transaction PIN"
-        },
-        {
-          type: "biometric",
-          enabled: true,
-          display_name: "Biometric Authentication",
-          biometric_types: [ "fingerprint", "face_recognition" ]
-        }
-      ],
-      required_method: "any",
-      expires_at: (Time.current + 3.minutes).iso8601,
-      max_attempts: 3
-    }
-  end
-
-  def self.verify_mfa_response(challenge_id, method, credentials)
-    # Mock MFA verification
-    if credentials.is_a?(Hash) && credentials["pin"] == "1234"
-      { status: "verified", proceed_to_processing: true }
+  # Recursively symbolize keys in a hash
+  def self.deep_symbolize_keys(obj)
+    case obj
+    when Hash
+      obj.each_with_object({}) do |(key, value), result|
+        result[key.to_sym] = deep_symbolize_keys(value)
+      end
+    when Array
+      obj.map { |item| deep_symbolize_keys(item) }
     else
-      { status: "failed", error: { code: "INVALID_CREDENTIALS", message: "Invalid credentials" } }
+      obj
     end
-  end
-
-  def self.refund_payment(payment_id, amount, reason)
-    # Mock payment refund
-    {
-      payment_id: payment_id,
-      refund_id: "refund_mock_#{SecureRandom.hex(8)}",
-      status: "completed",
-      amount_refunded: amount
-    }
-  end
-
-  def self.link_external_account(wallet_id, account_type, account_details)
-    # Mock external account linking (PROTO Section 6.5.2)
-    account_id = "ext_mock_#{SecureRandom.hex(8)}"
-    {
-      account_id: account_id,
-      account_type: account_type,
-      status: "pending_verification",
-      masked_details: mask_account_details(account_type, account_details),
-      created_at: Time.current.iso8601
-    }
-  end
-
-  def self.verify_external_account(account_id, verification_data)
-    # Mock account verification (PROTO Section 6.5.2)
-    {
-      account_id: account_id,
-      status: "verified",
-      verified_at: Time.current.iso8601,
-      verification_method: "micro_deposit" # or "instant" or "manual"
-    }
-  end
-
-  def self.fund_wallet(wallet_id, source_account_id, amount, currency)
-    # Mock wallet funding (PROTO Section 6.5.2)
-    funding_id = "fund_mock_#{SecureRandom.hex(8)}"
-    {
-      funding_id: funding_id,
-      status: "processing",
-      amount: amount,
-      currency: currency,
-      source_account_id: source_account_id,
-      estimated_completion: (Time.current + 5.minutes).iso8601
-    }
-  end
-
-  def self.initiate_withdrawal(wallet_id, destination_account_id, amount, currency)
-    # Mock withdrawal initiation (PROTO Section 6.6.2)
-    withdrawal_id = "wd_mock_#{SecureRandom.hex(8)}"
-    {
-      withdrawal_id: withdrawal_id,
-      status: "pending",
-      amount: amount,
-      currency: currency,
-      destination_account_id: destination_account_id,
-      processing_fee: calculate_processing_fee(amount),
-      estimated_completion: (Time.current + 1.day).iso8601
-    }
-  end
-
-  private
-
-  def self.mask_account_details(account_type, details)
-    case account_type
-    when "bank_account"
-      "****#{details['account_number']&.last(4)}"
-    when "debit_card", "credit_card"
-      "****-****-****-#{details['card_number']&.last(4)}"
-    else
-      "****"
-    end
-  end
-
-  def self.calculate_processing_fee(amount)
-    # Simple fee calculation - in reality this would be more complex
-    [ amount * 0.02, 2.99 ].max.round(2)
-  end
-
-  def self.circuit_breaker_metrics
-    # Return circuit breaker status for monitoring (PROTO Section 7.7.4)
-    @@circuit_breakers.transform_values(&:metrics)
   end
 end

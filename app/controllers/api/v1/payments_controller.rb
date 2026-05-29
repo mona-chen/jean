@@ -1,4 +1,4 @@
-class Api::V1::PaymentsController < ApplicationController
+class Api::V1::PaymentsController < Api::BaseController
   # TMCP Protocol Section 7.3-7.4: Mini-App Payment Processing with MFA
 
   before_action :authenticate_tep_token
@@ -24,7 +24,7 @@ class Api::V1::PaymentsController < ApplicationController
 
     # Validate currency
     currency = raw_params[:currency].to_s.upcase
-    unless %w[USD EUR GBP].include?(currency) # TMCP supported currencies
+    unless %w[USD EUR GBP NGN].include?(currency) # TMCP supported currencies
       return render json: { error: "invalid_currency", message: "Unsupported currency: #{currency}" }, status: :bad_request
     end
 
@@ -78,8 +78,14 @@ class Api::V1::PaymentsController < ApplicationController
     )
 
     # Cache payment data (TMCP requires idempotency)
+    # Use expires_at from wallet response if available, otherwise fall back to config
     payment_cache_key = "payment:#{payment_data[:payment_id]}"
-    Rails.cache.write(payment_cache_key, payment_data.except(:event_id), expires_in: 5.minutes)
+    cache_ttl = if payment_data[:expires_at].present?
+                  [ Time.parse(payment_data[:expires_at].to_s) - Time.current, 1.minute ].max
+                else
+                  TMCP.config[:payment_request_expiry]
+                end
+    Rails.cache.write(payment_cache_key, payment_data.except(:event_id), expires_in: cache_ttl)
 
     render json: payment_data, status: :created
   end

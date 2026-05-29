@@ -49,17 +49,61 @@ Rails.application.routes.draw do
          get "oauth2/device", to: "oauth/device_authorization#show"
          post "oauth2/device/token", to: "oauth/device_token#create"
 
-       # Store endpoints (TMCP Protocol Section 16.6)
-       get "store/categories", to: "store#categories"
-       get "store/apps", to: "store#apps"
-       post "store/apps/:miniapp_id/install", to: "store#install"
-       delete "store/apps/:miniapp_id/install", to: "store#uninstall"
+        # Store endpoints (TMCP Protocol Section 16.6)
+        get "store/categories", to: "store#categories"
+        get "store/apps", to: "store#apps"
+        get "store/apps/:miniapp_id", to: "store#show"
+        post "store/apps/:miniapp_id/install", to: "store#install"
+        delete "store/apps/:miniapp_id/install", to: "store#uninstall"
 
         # Client endpoints (TMCP Protocol Section 10.5, 16.8)
         get "capabilities", to: "client#capabilities"
         get "capabilities/:capability", to: "client#check_capability"
         post "client/bootstrap", to: "client#bootstrap"
         post "client/check-updates", to: "client#check_updates"
+        post "client/bridge", to: "client_bridge#handle_method"
+
+        namespace :social do
+          resources :uploads, only: [ :create ]
+          resources :bookmarks, only: [ :index ]
+          resource :search, only: [ :show ], controller: :search
+          resource :feed, only: [ :show ], controller: :feed
+          resources :videos, only: [ :create, :show, :destroy ] do
+            resource :like, only: [ :create, :destroy ], controller: :likes
+            resource :bookmark, only: [ :create, :destroy ], controller: :bookmarks
+            resources :shares, only: [ :create ]
+            resources :reports, only: [ :create ]
+            resources :views, only: [ :create ]
+            resources :comments, only: [ :index, :create ]
+            get :analytics, to: "analytics#show", as: :analytics
+          end
+          resources :creators, only: [ :show, :update ] do
+            resource :follow, only: [ :create, :destroy ], controller: :follows
+          end
+          post "moderation/video_status", to: "moderation#update_video_status"
+          post "moderation/bulk_update", to: "moderation#bulk_update"
+          get "moderation/reports", to: "moderation#report_list"
+          post "moderation/reports/:report_id/resolve", to: "moderation#resolve_report"
+        end
+
+        namespace :commerce do
+          resources :merchants, only: [ :create, :show ]
+          resources :storefronts, only: [ :index, :create, :show, :update ]
+          resources :products, only: [ :index, :show, :create ]
+          resources :carts, only: [ :create, :show ] do
+            resources :items, only: [ :update, :destroy ], controller: :cart_items, param: :sku_id
+          end
+          resources :checkouts, only: [ :create, :show ] do
+            member do
+              post :authorize
+              post :cancel
+            end
+          end
+          resources :orders, only: [ :show ] do
+            resource :fulfillment, only: [ :create ], controller: :fulfillments
+            resources :refunds, only: [ :create ]
+          end
+        end
 
         # Permission Revocation endpoints (TMCP Protocol Section 5.6)
         post "auth/revoke", to: "auth_revocation#create"
@@ -80,6 +124,23 @@ Rails.application.routes.draw do
     end
   end
   use_doorkeeper
+
+  # OAuth2 namespace aliases for backward compatibility
+  # Supports both /oauth2/* and /api/v1/oauth/* paths
+  scope "/oauth2" do
+    get "authorize", to: "api/v1/oauth#authorize"
+    post "token", to: "api/v1/oauth#token"
+    post "introspect", to: "api/v1/oauth#introspect"
+    post "consent", to: "api/v1/oauth#consent"
+    get "callback", to: "api/v1/oauth#callback"
+  end
+
+  # Additional OAuth2 device endpoints
+  scope "/oauth2/device" do
+    post "authorization", to: "api/v1/oauth/device_authorization#create"
+    get "/", to: "api/v1/oauth/device_authorization#show"
+    post "token", to: "api/v1/oauth/device_token#create"
+  end
 
     # Matrix Application Service endpoints (PROTO Section 3.1.2)
     scope "/_matrix/app/v1" do
@@ -120,6 +181,37 @@ Rails.application.routes.draw do
   # Render dynamic PWA files from app/views/pwa/* (remember to link manifest in application.html.erb)
   # get "manifest" => "rails/pwa#manifest", as: :pwa_manifest
   # get "service-worker" => "rails/pwa#service_worker", as: :pwa_service_worker
+
+  # Admin routes
+  get "admin/login", to: "admin/sessions#new", as: :admin_login
+  post "admin/login", to: "admin/sessions#create"
+  get "admin/mfa", to: "admin/sessions#mfa", as: :admin_mfa
+  post "admin/mfa", to: "admin/sessions#verify_mfa"
+  delete "admin/logout", to: "admin/sessions#destroy", as: :admin_logout
+
+  namespace :admin do
+    get "dashboard", to: "dashboard#index", as: :dashboard
+    resources :mini_apps, only: [:index, :show, :new, :create, :edit, :destroy], path: "mini-apps" do
+      member do
+        post :update
+        patch :update
+        put :update
+        delete :destroy
+        post :hard_delete
+        delete :hard_delete
+      end
+    end
+    resources :users, only: [:index, :show, :edit, :update]
+    resources :oauth_applications, only: [:index, :show, :destroy], path: "oauth-apps"
+
+    # Mini-app review workflow
+    get "mini-app-reviews", to: "mini_app_reviews#index", as: :mini_app_reviews
+    get "mini-app-reviews/:id", to: "mini_app_reviews#show", as: :mini_app_review
+    post "mini-app-reviews/:id/approve", to: "mini_app_reviews#approve", as: :approve_mini_app_review
+    post "mini-app-reviews/:id/reject", to: "mini_app_reviews#reject", as: :reject_mini_app_review
+    post "mini-app-reviews/:id/request-changes", to: "mini_app_reviews#request_changes", as: :request_changes_mini_app_review
+    post "mini-app-reviews/resolve-appeal", to: "mini_app_reviews#resolve_appeal", as: :resolve_mini_app_appeal
+  end
 
   # Defines the root path route ("/")
   # root "posts#index"

@@ -16,13 +16,85 @@ class Api::V1::PaymentsControllerTest < ActionDispatch::IntegrationTest
       wallet_id: @user.wallet_id
     )
     @headers = { "Authorization" => "Bearer #{@token}" }
+
+    # Setup wallet API stubs for payment endpoints
+    wallet_api_base = ENV["WALLET_API_BASE_URL"] || "https://wallet.tween.im"
+
+    # Mock payment request endpoint
+    stub_request(:post, /#{Regexp.escape(wallet_api_base)}\/api\/v1\/tmcp\/payments\/request/)
+      .to_return(
+         status: 201,
+         body: {
+           payment_id: "pay_123",
+           status: "pending_authorization",
+           amount: 15000.00,
+           currency: "NGN",
+           merchant_order_id: "ORDER-2024-12345",
+           merchant: { merchant_id: "miniapp_001" },
+           authorization_required: false
+         }.to_json
+       )
+
+    # Mock payment authorization endpoint
+    stub_request(:post, /#{Regexp.escape(wallet_api_base)}\/api\/v1\/tmcp\/payments\/[^\/]+\/authorize/)
+      .to_return do |request|
+        payment_id = request.uri.path.split("/")[-2]
+        {
+          status: 200,
+          body: {
+            payment_id: payment_id,
+            status: "completed",
+            amount: 15000.00,
+            currency: "NGN",
+            authorization_required: false
+          }.to_json
+        }
+      end
+
+    # Mock MFA challenge endpoint
+    stub_request(:post, /#{Regexp.escape(wallet_api_base)}\/api\/v1\/tmcp\/payments\/[^\/]+\/mfa\/challenge/)
+      .to_return(
+        status: 200,
+        body: {
+          challenge_id: "mfa_123",
+          methods: [
+            { type: "transaction_pin", enabled: true, display_name: "Transaction PIN" },
+            { type: "biometric", enabled: true, display_name: "Biometric" }
+          ],
+          required_method: "any",
+          expires_at: (Time.current + 3.minutes).iso8601,
+          max_attempts: 3
+        }.to_json
+      )
+
+    # Mock MFA verify endpoint
+    stub_request(:post, /#{Regexp.escape(wallet_api_base)}\/api\/v1\/tmcp\/payments\/[^\/]+\/mfa\/verify/)
+      .to_return(
+        status: 200,
+        body: { status: "verified", proceed_to_processing: true }.to_json
+      )
+
+    # Mock refund endpoint
+    stub_request(:post, /#{Regexp.escape(wallet_api_base)}\/api\/v1\/tmcp\/payments\/[^\/]+\/refund/)
+      .to_return do |request|
+        payment_id = request.uri.path.split("/")[-2]
+        {
+          status: 200,
+          body: {
+            payment_id: payment_id,
+            refund_id: "refund_123",
+            status: "completed",
+            amount_refunded: 15000.00
+          }.to_json
+        }
+      end
   end
 
   test "should create payment request" do
     # Section 7.3.1: Payment Request
     payment_params = {
       amount: 15000.00,
-      currency: "USD",
+      currency: "NGN",
       description: "Order #12345",
       merchant_order_id: "ORDER-2024-12345",
       callback_url: "https://miniapp.example.com/webhooks/payment",
@@ -33,23 +105,24 @@ class Api::V1::PaymentsControllerTest < ActionDispatch::IntegrationTest
          params: payment_params,
          headers: @headers
 
-    assert_response :created
+     assert_response :created
 
     response_body = JSON.parse(response.body)
     assert response_body.key?("payment_id")
     assert response_body.key?("status")
     assert_equal "pending_authorization", response_body["status"]
     assert_equal 15000.00, response_body["amount"]
-    assert_equal "USD", response_body["currency"]
+    assert_equal "NGN", response_body["currency"]
     assert response_body.key?("merchant")
     assert response_body.key?("authorization_required")
+    assert_equal false, response_body["authorization_required"]
   end
 
   test "should validate payment amount limits" do
     # Amount exceeds TMCP limit (50,000.00)
     payment_params = {
       amount: 100000.00,
-      currency: "USD",
+      currency: "NGN",
       description: "Over limit order",
       merchant_order_id: "ORDER-2024-OVERLIMIT",
       callback_url: "https://miniapp.example.com/webhooks/payment",
@@ -73,7 +146,7 @@ class Api::V1::PaymentsControllerTest < ActionDispatch::IntegrationTest
 
     payment_params = {
       amount: 1000.00,
-      currency: "USD",
+      currency: "NGN",
       description: "Test payment",
       merchant_order_id: "ORDER-2024-TEST",
       callback_url: "https://miniapp.example.com/webhooks/payment",
@@ -92,7 +165,7 @@ class Api::V1::PaymentsControllerTest < ActionDispatch::IntegrationTest
     # Amount > 50.00 should trigger MFA
     payment_params = {
       amount: 100.00,
-      currency: "USD",
+      currency: "NGN",
       description: "High-value order",
       merchant_order_id: "ORDER-2024-HIGHVALUE",
       callback_url: "https://miniapp.example.com/webhooks/payment",

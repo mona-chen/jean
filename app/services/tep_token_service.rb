@@ -26,10 +26,15 @@ class TepTokenService
     def load_key
       if ENV["TMCP_PRIVATE_KEY"].present?
         @_private_key = OpenSSL::PKey::RSA.new(ENV["TMCP_PRIVATE_KEY"])
-      else
+      elsif Rails.env.test?
+        # In test environment, generate a temporary key if none is provided
         @_private_key = OpenSSL::PKey::RSA.new(2048)
+      else
+        # Soft fail: allow boot without key, but token issuance/introspection will fail at runtime
+        @_private_key = nil
+        Rails.logger.error "TMCP_PRIVATE_KEY is not configured. TEP token signing and local introspection will fail."
       end
-      @_public_key = @_private_key.public_key
+      @_public_key = @_private_key&.public_key
     end
 
     def reset_keys!
@@ -67,7 +72,8 @@ class TepTokenService
 
       headers = { kid: KEY_ID }
 
-      JWT.encode(jwt_payload, private_key, ALGORITHM, headers)
+      jwt = JWT.encode(jwt_payload, private_key, ALGORITHM, headers)
+      "tep.#{jwt}"
     end
 
     def build_default_authorization_context(payload)
@@ -114,8 +120,8 @@ class TepTokenService
     def decode(token)
       begin
         jwt_token = token
-        if token.start_with?("tep.")
-          jwt_token = token[4..-1]
+        while jwt_token.start_with?("tep.")
+          jwt_token = jwt_token[4..-1]
         end
 
         decoded = JWT.decode(jwt_token, public_key, true, {
@@ -129,6 +135,8 @@ class TepTokenService
         payload = decoded[0]
         headers = decoded[1]
 
+        # Validate algorithm to prevent algorithm confusion attacks
+        validate_algorithm!(headers)
         validate_issuer!(payload)
         validate_audience!(payload)
         validate_token_type!(payload)
